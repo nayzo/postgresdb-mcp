@@ -1,0 +1,31 @@
+{
+  "environments": {
+    "local": {
+      "host": "localhost",
+      "port": 5432,
+      "database": "mydb",
+      "user": "postgres",
+      "password": "postgres",
+      "schema": "public"
+    },
+    "staging": {
+      "host": "your-aurora-cluster.cluster-xxxx.eu-west-1.rds.amazonaws.com",
+      "port": 5432,
+      "database": "stg_mydb",
+      "user": "stg_user",
+      "password": "your-staging-password",
+      "schema": "public",
+      "ssl": true
+    },
+    "prod": {
+      "host": "your-prod-cluster.cluster-xxxx.eu-west-1.rds.amazonaws.com",
+      "port": 5432,
+      "database": "prod_mydb",
+      "user": "prod_user",
+      "password": "your-prod-password",
+      "schema": "public",
+      "ssl": true,
+      "protected": true
+    }
+  }
+}
