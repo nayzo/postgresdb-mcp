@@ -69,7 +69,7 @@ POSTGRES_PROD_ALLOW_WRITES=true
 | `SCHEMA` | no | `public` | Default schema for queries |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
 | `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Default `true` — only set to `false` if your DB uses a self-signed cert and you have no other option. Never disable in production. |
-| `ALLOW_WRITES` | no | `false` | `true`: writes allowed, confirmation `confirm_write="WRITE"` required. `false` or unset: writes completely blocked. The `.env.dist` template sets `true` on all environments as a recommended starting point. |
+| `ALLOW_WRITES` | no | `false` | `true`: writes allowed, `confirm_write="WRITE"` required to execute. `false`: writes completely blocked, no confirmation shown. |
 
 ## MCP client setup
 
