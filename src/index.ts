@@ -23,7 +23,12 @@ interface EnvConfig {
   ssl?: boolean;
   /** Set to false only for self-signed certificates (dev/test). Always true in production. Default: true */
   sslRejectUnauthorized?: boolean;
-  protected?: boolean;
+  /**
+   * Write protection mode:
+   *   true  → writes allowed but require confirm_write="WRITE" to execute
+   *   false → writes completely blocked, no confirmation possible
+   */
+  writeProtection?: boolean;
 }
 
 interface Config {
@@ -93,7 +98,7 @@ function buildConfigFromEnv(vars: Record<string, string>): Config {
       schema: vars[`${p}_SCHEMA`] || undefined,
       ssl: vars[`${p}_SSL`] === "true",
       sslRejectUnauthorized: sslRejectRaw !== undefined ? sslRejectRaw !== "false" : true,
-      protected: vars[`${p}_PROTECTED`] === "true",
+      writeProtection: vars[`${p}_WRITE_PROTECTION`] === "true",
     };
   }
 
@@ -226,11 +231,16 @@ function isValidParam(v: unknown): v is string | number | boolean | null {
 function buildTools(): Tool[] {
   const envEnum = ENV_NAMES;
   const envDescription = envEnum.join(", ");
-  const protectedEnvs = ENV_NAMES.filter((e) => ENV_CONFIGS[e].protected);
-  const protectionNote =
-    protectedEnvs.length > 0
-      ? `\n\n⚠️ Protected environments: ${protectedEnvs.join(", ")}. Write operations require confirm_write=true.`
-      : "";
+  const confirmEnvs = ENV_NAMES.filter((e) => ENV_CONFIGS[e].writeProtection === true);
+  const blockedEnvs = ENV_NAMES.filter((e) => !ENV_CONFIGS[e].writeProtection);
+  const protectionNote = [
+    confirmEnvs.length > 0
+      ? `\n\n⚠️ Write confirmation required on: ${confirmEnvs.join(", ")}. Pass confirm_write="WRITE" to proceed.`
+      : "",
+    blockedEnvs.length > 0
+      ? `\n🚫 Writes completely disabled on: ${blockedEnvs.join(", ")}.`
+      : "",
+  ].join("");
 
   return [
     {
@@ -258,9 +268,8 @@ function buildTools(): Tool[] {
             items: { type: ["string", "number", "boolean", "null"] },
           },
           confirm_write: {
-            type: "boolean",
-            description: `Set to true to confirm write operations on protected environments (${protectedEnvs.join(", ") || "none"})`,
-            default: false,
+            type: "string",
+            description: `Type "WRITE" (exact, case-sensitive) to confirm a write operation on environments where write protection is enabled (${confirmEnvs.join(", ") || "none"})`,
           },
         },
         required: ["env", "sql"],
@@ -361,11 +370,12 @@ function colorTool(tool: string): string {
 }
 
 function colorValue(key: string, value: unknown): string {
-  if (key === "type") return `${C.green}${value}${C.reset}`;
+  if (key === "type")     return `${C.green}${value}${C.reset}`;
   if (key === "duration") return `${C.dim}${value}${C.reset}`;
-  if (key === "rows") return `${C.blue}${value} rows${C.reset}`;
-  if (key === "protected" && value === true) return `${C.red}protected${C.reset}`;
-  if (key === "protected") return "";
+  if (key === "rows")     return `${C.blue}${value} rows${C.reset}`;
+  if (key === "write" && value === "confirmed") return `${C.yellow}write:confirmed${C.reset}`;
+  if (key === "write" && value === "blocked")   return `${C.red}write:blocked${C.reset}`;
+  if (key === "write")    return "";
   return `${C.dim}${value}${C.reset}`;
 }
 
@@ -408,7 +418,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           database: ENV_CONFIGS[envName].database,
           schema: ENV_CONFIGS[envName].schema ?? "public",
           ssl: ENV_CONFIGS[envName].ssl ?? false,
-          protected: ENV_CONFIGS[envName].protected ?? false,
+          writeProtection: ENV_CONFIGS[envName].writeProtection === true ? "confirm" : "disabled",
         }));
 
         return {
@@ -421,12 +431,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           env,
           sql,
           params,
-          confirm_write = false,
+          confirm_write,
         } = args as {
           env: string;
           sql: string;
           params?: unknown[];
-          confirm_write?: boolean;
+          confirm_write?: string;
         };
 
         const envConfig = ENV_CONFIGS[env];
@@ -445,26 +455,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        if (envConfig.protected && isDangerousQuery(sql) && !confirm_write) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "WRITE PROTECTION",
-                    environment: env,
-                    message: `Write operations on "${env}" require explicit confirmation.`,
-                    solution: "Set confirm_write=true to proceed.",
-                    warning: "Double-check your query before confirming.",
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-            isError: true,
-          };
+        if (isDangerousQuery(sql)) {
+          if (!envConfig.writeProtection) {
+            // Write protection disabled → writes completely blocked
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      error: "WRITES DISABLED",
+                      environment: env,
+                      message: `Write operations are not allowed on "${env}". This feature is disabled.`,
+                      hint: `Set POSTGRES_${env.toUpperCase()}_WRITE_PROTECTION=true in your .env to enable write confirmation.`,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          // Write protection enabled → require explicit "WRITE" confirmation
+          if (confirm_write !== "WRITE") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      error: "WRITE CONFIRMATION REQUIRED",
+                      environment: env,
+                      message: `Write operation detected on "${env}". You must explicitly confirm.`,
+                      action: 'Pass confirm_write="WRITE" (exact, case-sensitive) to proceed.',
+                      warning: "Double-check your query before confirming.",
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
         }
 
         const pool = getPool(env);
@@ -478,7 +513,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           db: ENV_CONFIGS[env].database,
           rows: result.rowCount ?? 0,
           duration: `${duration}ms`,
-          protected: ENV_CONFIGS[env].protected ?? false,
+          ...(isDangerousQuery(sql) ? { write: ENV_CONFIGS[env].writeProtection ? "confirmed" : "blocked" } : {}),
         });
 
         return {

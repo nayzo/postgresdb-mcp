@@ -53,7 +53,7 @@ POSTGRES_PROD_DATABASE=prod_mydb
 POSTGRES_PROD_USER=prod_user
 POSTGRES_PROD_PASSWORD=your-prod-password
 POSTGRES_PROD_SSL=true
-POSTGRES_PROD_PROTECTED=true
+POSTGRES_PROD_WRITE_PROTECTION=true
 ```
 
 **Available variables per environment** (prefix: `POSTGRES_{ENV}_`):
@@ -68,7 +68,7 @@ POSTGRES_PROD_PROTECTED=true
 | `SCHEMA` | no | `public` | Default schema for queries |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
 | `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test), never in production |
-| `PROTECTED` | no | `false` | Require `confirm_write=true` for write operations |
+| `WRITE_PROTECTION` | no | `false` | `true`: writes require `confirm_write="WRITE"` to execute. `false` (default): writes are completely blocked, no confirmation shown |
 
 ## MCP client setup
 
@@ -154,9 +154,16 @@ What environments are configured?
 
 ## Write protection
 
-Environments with `POSTGRES_{ENV}_PROTECTED=true` block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless `confirm_write=true` is explicitly passed by the AI.
+Every environment has one of two write modes, controlled by `POSTGRES_{ENV}_WRITE_PROTECTION`:
+
+| Mode | Config | Behaviour |
+|---|---|---|
+| **Disabled** (default) | `WRITE_PROTECTION=false` or not set | Write operations (`UPDATE`, `DELETE`, `INSERT`, `DROP`…) are immediately rejected. No confirmation prompt is shown. |
+| **Confirmation** | `WRITE_PROTECTION=true` | Write operations are blocked until the AI explicitly passes `confirm_write="WRITE"` (exact string, case-sensitive). |
 
 The check is applied after stripping SQL comments and handles multi-statement queries and CTEs containing embedded writes.
+
+**Recommendation:** set `WRITE_PROTECTION=true` on any environment you want to protect but still be able to write to (preprod, prod). Leave it unset on environments where writes should never happen from the AI (read-only replicas, analytics DBs).
 
 ## Development
 
