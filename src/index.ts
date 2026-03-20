@@ -24,9 +24,8 @@ interface EnvConfig {
   /** Set to false only for self-signed certificates (dev/test). Always true in production. Default: true */
   sslRejectUnauthorized?: boolean;
   /**
-   * Write protection mode:
-   *   true  → writes allowed but require confirm_write="WRITE" to execute
-   *   false → writes completely blocked, no confirmation possible
+   * false (default): writes completely blocked, no confirmation possible
+   * true: writes allowed but require confirm_write="WRITE" to execute
    */
   allowWrites?: boolean;
 }
@@ -133,6 +132,51 @@ function loadConfig(): Config {
 const CONFIG = loadConfig();
 const ENV_CONFIGS = CONFIG.environments;
 const ENV_NAMES = Object.keys(ENV_CONFIGS);
+
+// ─── Logging ────────────────────────────────────────────────────────────────
+
+const C = {
+  reset:  "\x1b[0m",
+  dim:    "\x1b[2m",
+  cyan:   "\x1b[36m",
+  yellow: "\x1b[33m",
+  green:  "\x1b[32m",
+  red:    "\x1b[31m",
+  blue:   "\x1b[34m",
+  bold:   "\x1b[1m",
+};
+
+function colorEnv(env: string): string {
+  return `${C.bold}${C.yellow}${env}${C.reset}`;
+}
+
+function colorTool(tool: string): string {
+  return `${C.cyan}${tool}${C.reset}`;
+}
+
+function colorValue(key: string, value: unknown): string {
+  if (key === "type")     return `${C.green}${value}${C.reset}`;
+  if (key === "duration") return `${C.dim}${value}${C.reset}`;
+  if (key === "rows")     return `${C.blue}${value} rows${C.reset}`;
+  if (key === "write")    return `${C.yellow}write:confirmed${C.reset}`;
+  return `${C.dim}${value}${C.reset}`;
+}
+
+function log(tool: string, env: string | null, details: Record<string, unknown>): void {
+  const prefix   = `${C.dim}[postgresdb-mcp]${C.reset}`;
+  const toolPart = `[${colorTool(tool)}]`;
+  const envPart  = env ? ` [${colorEnv(env)}]` : "";
+
+  const detailParts = Object.entries(details)
+    .map(([k, v]) => {
+      const colored = colorValue(k, v);
+      return colored ? `${C.dim}${k}=${C.reset}${colored}` : "";
+    })
+    .filter(Boolean)
+    .join("  ");
+
+  console.error(`${prefix} ${toolPart}${envPart}  ${detailParts}`);
+}
 
 // ─── Connection pool ────────────────────────────────────────────────────────
 
@@ -269,7 +313,7 @@ function buildTools(): Tool[] {
           },
           confirm_write: {
             type: "string",
-            description: `Type "WRITE" (exact, case-sensitive) to confirm a write operation on environments where write protection is enabled (${confirmEnvs.join(", ") || "none"})`,
+            description: `Type "WRITE" (exact, case-sensitive) to confirm a write operation on environments where writes are allowed (${confirmEnvs.join(", ") || "none"})`,
           },
         },
         required: ["env", "sql"],
@@ -348,53 +392,6 @@ function buildTools(): Tool[] {
 
 const TOOLS = buildTools();
 
-// ─── Logging ────────────────────────────────────────────────────────────────
-
-const C = {
-  reset:  "\x1b[0m",
-  dim:    "\x1b[2m",
-  cyan:   "\x1b[36m",
-  yellow: "\x1b[33m",
-  green:  "\x1b[32m",
-  red:    "\x1b[31m",
-  blue:   "\x1b[34m",
-  bold:   "\x1b[1m",
-};
-
-function colorEnv(env: string): string {
-  return `${C.bold}${C.yellow}${env}${C.reset}`;
-}
-
-function colorTool(tool: string): string {
-  return `${C.cyan}${tool}${C.reset}`;
-}
-
-function colorValue(key: string, value: unknown): string {
-  if (key === "type")     return `${C.green}${value}${C.reset}`;
-  if (key === "duration") return `${C.dim}${value}${C.reset}`;
-  if (key === "rows")     return `${C.blue}${value} rows${C.reset}`;
-  if (key === "write" && value === "confirmed") return `${C.yellow}write:confirmed${C.reset}`;
-  if (key === "write" && value === "blocked")   return `${C.red}write:blocked${C.reset}`;
-  if (key === "write")    return "";
-  return `${C.dim}${value}${C.reset}`;
-}
-
-function log(tool: string, env: string | null, details: Record<string, unknown>): void {
-  const prefix = `${C.dim}[postgresdb-mcp]${C.reset}`;
-  const toolPart = `[${colorTool(tool)}]`;
-  const envPart = env ? ` [${colorEnv(env)}]` : "";
-
-  const detailParts = Object.entries(details)
-    .map(([k, v]) => {
-      const colored = colorValue(k, v);
-      return colored ? `${C.dim}${k}=${C.reset}${colored}` : "";
-    })
-    .filter(Boolean)
-    .join("  ");
-
-  console.error(`${prefix} ${toolPart}${envPart}  ${detailParts}`);
-}
-
 // ─── MCP server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -455,9 +452,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        if (isDangerousQuery(sql)) {
+        const dangerous = isDangerousQuery(sql);
+
+        if (dangerous) {
           if (!envConfig.allowWrites) {
-            // Write protection disabled → writes completely blocked
             return {
               content: [
                 {
@@ -478,7 +476,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
           }
 
-          // Write protection enabled → require explicit "WRITE" confirmation
           if (confirm_write !== "WRITE") {
             return {
               content: [
@@ -513,7 +510,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           db: ENV_CONFIGS[env].database,
           rows: result.rowCount ?? 0,
           duration: `${duration}ms`,
-          ...(isDangerousQuery(sql) ? { write: ENV_CONFIGS[env].allowWrites ? "confirmed" : "blocked" } : {}),
+          ...(dangerous ? { write: true } : {}),
         });
 
         return {

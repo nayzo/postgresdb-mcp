@@ -4,41 +4,56 @@
 
 ### Breaking changes
 - Config now loaded from a `.env` file instead of `config.json`
-  - Old: `postgresdb-mcp --config /path/to/config.json`
-  - New: `postgresdb-mcp --env /path/to/.env` (or `.env` in CWD by default)
-- `config.json` and `config.example.json` removed: use `.env.dist` as the template
+  - Before: `postgresdb-mcp --config /path/to/config.json`
+  - After: `postgresdb-mcp --env /path/to/.env` (or `.env` in CWD by default)
+- `config.json` and `config.example.json` removed — use `.env.dist` as the template
+- Write protection reworked: `protected` flag replaced by `ALLOW_WRITES`
+  - Before: `protected=true` + `confirm_write=true` (boolean)
+  - After: `ALLOW_WRITES=false` (default, writes blocked) or `ALLOW_WRITES=true` (writes allowed with `confirm_write="WRITE"`)
+- `confirm_write` parameter changed from boolean to string — must equal `"WRITE"` (exact, case-sensitive)
 
 ### Added
-- `.env`-based configuration: environments are auto-discovered from `POSTGRES_{ENV}_HOST` variables
-- `POSTGRES_{ENV}_SSL_REJECT_UNAUTHORIZED` variable (default: `true`): allows self-signed certs in dev/test without disabling cert verification in production
-- Runtime config validation with clear error messages for missing or malformed fields
-- Runtime parameter validation: rejects non-scalar values before they reach the database driver
-- Pool auto-recovery: on a fatal pool error, the pool is torn down and recreated on the next request
+- `.env`-based configuration: environments auto-discovered from `POSTGRES_{ENV}_HOST` variables, order preserved
+- `POSTGRES_{ENV}_ALLOW_WRITES` flag (default: `false`):
+  - `false`: writes immediately rejected, no confirmation shown
+  - `true`: writes allowed, require `confirm_write="WRITE"` to execute
+- `POSTGRES_{ENV}_SSL_REJECT_UNAUTHORIZED` (default: `true`): certificate verification, set to `false` only for self-signed certs
+- Runtime config validation at startup with clear error messages for missing fields
+- Runtime parameter type validation: rejects non-scalar values before reaching the database driver
+- Pool auto-recovery: on fatal pool error, pool is removed from cache and recreated on next request
+- Per-request colored terminal logs: env in bold yellow, tool in cyan, query type in green, rows in blue, duration dimmed, errors in red
+- All tool responses now include `environment` and `database` context
+- `query` response includes `queryType` and `duration`
+- `list-tables` response key renamed to `tables`
+- `describe-table` response key renamed to `columns`
+- `list-schemas` response key renamed to `schemas`
+- `list-environments` exposes `allowWrites` status (`"confirm"` or `"disabled"`) per environment
 
 ### Changed
-- `isDangerousQuery()` now strips SQL comments (`--`, `/* */`) before checking for write keywords, preventing comment-based bypass
-- `isDangerousQuery()` now splits on `;` to catch multi-statement attacks (e.g. `SELECT 1; DELETE FROM users`)
+- `isDangerousQuery()` now strips SQL comments (`--`, `/* */`) before checking for write keywords
+- `isDangerousQuery()` splits on `;` to detect multi-statement attacks (e.g. `SELECT 1; DELETE FROM users`)
 - `isDangerousQuery()` detects write keywords inside CTEs (`WITH x AS (UPDATE ...) SELECT * FROM x`)
-- Server startup logs now include a `[postgresdb-mcp]` prefix for easier filtering
+- `isDangerousQuery()` result cached per request to avoid double computation
+- Color/logging helpers moved before pool initialization in source for clarity
 
 ### Fixed
-- SSL connections previously used `rejectUnauthorized: false` unconditionally, now defaults to `true`
-- Configs with wrong field types now fail at startup with a clear error instead of a cryptic driver error at query time
+- SSL previously used `rejectUnauthorized: false` unconditionally — now defaults to `true`
+- `write:blocked` log entry was dead code — removed (blocked writes return early before reaching the log)
 
 ## [2.0.0] - 2026-02-25
 
 ### Breaking changes
-- Config is now loaded from a JSON file passed via `--config /path/to/config.json`
-- Credentials are no longer hardcoded
+- Config now loaded from a JSON file via `--config /path/to/config.json`
+- Credentials no longer hardcoded
 
 ### Added
-- File-based configuration: define any number of environments in a single JSON file
+- File-based configuration: any number of environments in a single JSON file
 - Per-environment `ssl` and `protected` flags
-- `confirm_write` replaces `confirm_prod_write` (now applies to any protected environment, not just prod)
+- `confirm_write` replaces `confirm_prod_write`
 
 ### Changed
-- Tool descriptions are dynamically built from the loaded config
-- Default schema changed from `users` to `public` (overridable per environment in config)
+- Tool descriptions dynamically built from loaded config
+- Default schema changed from `users` to `public`
 - Error responses no longer include stack traces
 
 ## [1.0.0] - 2026-02-02
