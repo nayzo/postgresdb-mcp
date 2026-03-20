@@ -28,7 +28,7 @@ interface EnvConfig {
    *   true  → writes allowed but require confirm_write="WRITE" to execute
    *   false → writes completely blocked, no confirmation possible
    */
-  writeProtection?: boolean;
+  allowWrites?: boolean;
 }
 
 interface Config {
@@ -98,7 +98,7 @@ function buildConfigFromEnv(vars: Record<string, string>): Config {
       schema: vars[`${p}_SCHEMA`] || undefined,
       ssl: vars[`${p}_SSL`] === "true",
       sslRejectUnauthorized: sslRejectRaw !== undefined ? sslRejectRaw !== "false" : true,
-      writeProtection: vars[`${p}_WRITE_PROTECTION`] === "true",
+      allowWrites: vars[`${p}_ALLOW_WRITES`] === "true",
     };
   }
 
@@ -231,8 +231,8 @@ function isValidParam(v: unknown): v is string | number | boolean | null {
 function buildTools(): Tool[] {
   const envEnum = ENV_NAMES;
   const envDescription = envEnum.join(", ");
-  const confirmEnvs = ENV_NAMES.filter((e) => ENV_CONFIGS[e].writeProtection === true);
-  const blockedEnvs = ENV_NAMES.filter((e) => !ENV_CONFIGS[e].writeProtection);
+  const confirmEnvs = ENV_NAMES.filter((e) => ENV_CONFIGS[e].allowWrites === true);
+  const blockedEnvs = ENV_NAMES.filter((e) => !ENV_CONFIGS[e].allowWrites);
   const protectionNote = [
     confirmEnvs.length > 0
       ? `\n\n⚠️ Write confirmation required on: ${confirmEnvs.join(", ")}. Pass confirm_write="WRITE" to proceed.`
@@ -418,7 +418,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           database: ENV_CONFIGS[envName].database,
           schema: ENV_CONFIGS[envName].schema ?? "public",
           ssl: ENV_CONFIGS[envName].ssl ?? false,
-          writeProtection: ENV_CONFIGS[envName].writeProtection === true ? "confirm" : "disabled",
+          allowWrites: ENV_CONFIGS[envName].allowWrites === true ? "confirm" : "disabled",
         }));
 
         return {
@@ -456,7 +456,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (isDangerousQuery(sql)) {
-          if (!envConfig.writeProtection) {
+          if (!envConfig.allowWrites) {
             // Write protection disabled → writes completely blocked
             return {
               content: [
@@ -467,7 +467,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                       error: "WRITES DISABLED",
                       environment: env,
                       message: `Write operations are not allowed on "${env}". This feature is disabled.`,
-                      hint: `Set POSTGRES_${env.toUpperCase()}_WRITE_PROTECTION=true in your .env to enable write confirmation.`,
+                      hint: `Set POSTGRES_${env.toUpperCase()}_ALLOW_WRITES=true in your .env to enable write confirmation.`,
                     },
                     null,
                     2
@@ -513,7 +513,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           db: ENV_CONFIGS[env].database,
           rows: result.rowCount ?? 0,
           duration: `${duration}ms`,
-          ...(isDangerousQuery(sql) ? { write: ENV_CONFIGS[env].writeProtection ? "confirmed" : "blocked" } : {}),
+          ...(isDangerousQuery(sql) ? { write: ENV_CONFIGS[env].allowWrites ? "confirmed" : "blocked" } : {}),
         });
 
         return {

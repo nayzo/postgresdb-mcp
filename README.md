@@ -5,7 +5,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 ## Features
 
 - **Multi-environment**: connect to any number of databases (local, tst, stg, preprod, prod…) from a single `.env` file
-- **Write protection**: two modes per environment — writes disabled by default, or confirmation required via `confirm_write="WRITE"`
+- **Write protection**: writes disabled by default (`ALLOW_WRITES=false`), or enabled with mandatory `"WRITE"` confirmation (`ALLOW_WRITES=true`)
 - **5 tools**: query, list-tables, describe-table, list-schemas, list-environments
 - **Connection pooling**: up to 5 connections per environment, with automatic pool recovery on error
 - **Parameterized queries**: safe execution with `$1`, `$2` … placeholders
@@ -53,7 +53,7 @@ POSTGRES_PROD_DATABASE=prod_mydb
 POSTGRES_PROD_USER=prod_user
 POSTGRES_PROD_PASSWORD=your-prod-password
 POSTGRES_PROD_SSL=true
-POSTGRES_PROD_WRITE_PROTECTION=true
+POSTGRES_PROD_ALLOW_WRITES=true
 ```
 
 **Available variables per environment** (prefix: `POSTGRES_{ENV}_`):
@@ -68,7 +68,7 @@ POSTGRES_PROD_WRITE_PROTECTION=true
 | `SCHEMA` | no | `public` | Default schema for queries |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
 | `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test), never in production |
-| `WRITE_PROTECTION` | no | `false` | `true`: writes require `confirm_write="WRITE"` to execute. `false` (default): writes are completely blocked, no confirmation shown |
+| `ALLOW_WRITES` | no | `false` | `true`: writes allowed, but require `confirm_write="WRITE"` to execute. `false` (default): writes completely blocked, no confirmation shown |
 
 ## MCP client setup
 
@@ -122,7 +122,7 @@ Execute a SQL query on a target environment. Returns `environment`, `database`, 
 Run: SELECT COUNT(*) FROM users.orders WHERE status = 'pending' on stg
 ```
 
-Write operations are subject to the environment's write protection mode (see [Write protection](#write-protection)). To confirm a write on an environment with `WRITE_PROTECTION=true`, pass `confirm_write="WRITE"`.
+Write operations are subject to the environment's write protection mode (see [Write protection](#write-protection)). To confirm a write on an environment with `ALLOW_WRITES=true`, pass `confirm_write="WRITE"`.
 
 ### `list-tables`
 List all tables in a schema.
@@ -154,16 +154,16 @@ What environments are configured?
 
 ## Write protection
 
-Every environment has one of two write modes, controlled by `POSTGRES_{ENV}_WRITE_PROTECTION`:
+Every environment has one of two write modes, controlled by `POSTGRES_{ENV}_ALLOW_WRITES`:
 
 | Mode | Config | Behaviour |
 |---|---|---|
-| **Disabled** (default) | `WRITE_PROTECTION=false` or not set | Write operations (`UPDATE`, `DELETE`, `INSERT`, `DROP`…) are immediately rejected. No confirmation prompt is shown. |
-| **Confirmation** | `WRITE_PROTECTION=true` | Write operations are blocked until the AI explicitly passes `confirm_write="WRITE"` (exact string, case-sensitive). |
+| **Blocked** (default) | `ALLOW_WRITES=false` or not set | Writes (`UPDATE`, `DELETE`, `INSERT`, `DROP`…) are immediately rejected. No confirmation prompt is shown. |
+| **Allowed with confirmation** | `ALLOW_WRITES=true` | Writes are allowed, but the AI must explicitly pass `confirm_write="WRITE"` (exact string, case-sensitive) to execute. |
 
 The check is applied after stripping SQL comments and handles multi-statement queries and CTEs containing embedded writes.
 
-**Recommendation:** set `WRITE_PROTECTION=true` on any environment you want to protect but still be able to write to (preprod, prod). Leave it unset on environments where writes should never happen from the AI (read-only replicas, analytics DBs).
+**Recommendation:** set `ALLOW_WRITES=true` on environments where you need to write from the AI (preprod, prod) — every write will require a deliberate `"WRITE"` confirmation. Leave it unset on read-only environments (replicas, analytics DBs).
 
 ## Development
 
