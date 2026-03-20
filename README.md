@@ -38,6 +38,7 @@ POSTGRES_LOCAL_HOST=localhost
 POSTGRES_LOCAL_DATABASE=mydb
 POSTGRES_LOCAL_USER=postgres
 POSTGRES_LOCAL_PASSWORD=postgres
+POSTGRES_LOCAL_ALLOW_WRITES=true
 
 # Staging
 POSTGRES_STG_HOST=your-env-host
@@ -68,7 +69,7 @@ POSTGRES_PROD_ALLOW_WRITES=true
 | `SCHEMA` | no | `public` | Default schema for queries |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
 | `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Default `true` — only set to `false` if your DB uses a self-signed cert and you have no other option. Never disable in production. |
-| `ALLOW_WRITES` | no | `false` | `true`: writes allowed, but require `confirm_write="WRITE"` to execute. `false` (default): writes completely blocked, no confirmation shown |
+| `ALLOW_WRITES` | no | `false` | `true`: writes allowed, confirmation `confirm_write="WRITE"` required. `false` or unset: writes completely blocked. The `.env.dist` template sets `true` on all environments as a recommended starting point. |
 
 ## MCP client setup
 
