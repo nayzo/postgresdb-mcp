@@ -4,7 +4,6 @@ dist/
 .env
 .env.*
 !.env.dist
-config.json
 .DS_Store
 *.tsbuildinfo
 .idea/
