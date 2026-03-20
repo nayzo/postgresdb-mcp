@@ -158,7 +158,7 @@ function getPool(envName: string): pg.Pool {
   });
 
   pool.on("error", (err) => {
-    console.error(`[postgresdb-mcp] Pool error on "${envName}":`, err.message);
+    console.error(`${C.dim}[postgresdb-mcp]${C.reset} ${C.red}pool error${C.reset} [${colorEnv(envName)}]  ${C.dim}${err.message}${C.reset}`);
     // Remove from cache so the next request gets a fresh pool
     pool.end().catch(() => {});
     delete pools[envName];
@@ -341,14 +341,48 @@ const TOOLS = buildTools();
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 
+const C = {
+  reset:  "\x1b[0m",
+  dim:    "\x1b[2m",
+  cyan:   "\x1b[36m",
+  yellow: "\x1b[33m",
+  green:  "\x1b[32m",
+  red:    "\x1b[31m",
+  blue:   "\x1b[34m",
+  bold:   "\x1b[1m",
+};
+
+function colorEnv(env: string): string {
+  return `${C.bold}${C.yellow}${env}${C.reset}`;
+}
+
+function colorTool(tool: string): string {
+  return `${C.cyan}${tool}${C.reset}`;
+}
+
+function colorValue(key: string, value: unknown): string {
+  if (key === "type") return `${C.green}${value}${C.reset}`;
+  if (key === "duration") return `${C.dim}${value}${C.reset}`;
+  if (key === "rows") return `${C.blue}${value} rows${C.reset}`;
+  if (key === "protected" && value === true) return `${C.red}protected${C.reset}`;
+  if (key === "protected") return "";
+  return `${C.dim}${value}${C.reset}`;
+}
+
 function log(tool: string, env: string | null, details: Record<string, unknown>): void {
-  const parts: string[] = [
-    `[postgresdb-mcp]`,
-    `[${tool}]`,
-    ...(env ? [`[${env}]`] : []),
-    ...Object.entries(details).map(([k, v]) => `${k}=${v}`),
-  ];
-  console.error(parts.join(" "));
+  const prefix = `${C.dim}[postgresdb-mcp]${C.reset}`;
+  const toolPart = `[${colorTool(tool)}]`;
+  const envPart = env ? ` [${colorEnv(env)}]` : "";
+
+  const detailParts = Object.entries(details)
+    .map(([k, v]) => {
+      const colored = colorValue(k, v);
+      return colored ? `${C.dim}${k}=${C.reset}${colored}` : "";
+    })
+    .filter(Boolean)
+    .join("  ");
+
+  console.error(`${prefix} ${toolPart}${envPart}  ${detailParts}`);
 }
 
 // ─── MCP server ─────────────────────────────────────────────────────────────
@@ -584,7 +618,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[postgresdb-mcp] [${name}] error=${message}`);
+    console.error(`${C.dim}[postgresdb-mcp]${C.reset} [${colorTool(name)}]  ${C.red}error${C.reset}  ${C.dim}${message}${C.reset}`);
     return {
       content: [
         {
@@ -602,12 +636,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[postgresdb-mcp] v2.1.0 started`);
-  console.error(`[postgresdb-mcp] Environments: ${ENV_NAMES.join(", ")}`);
+  console.error(`${C.dim}[postgresdb-mcp]${C.reset} ${C.bold}${C.green}v2.1.0 started${C.reset}`);
+  console.error(`${C.dim}[postgresdb-mcp]${C.reset} Environments: ${ENV_NAMES.map(colorEnv).join(`${C.dim}, ${C.reset}`)}`);
 }
 
 main().catch((error) => {
-  console.error("[postgresdb-mcp] Fatal error:", error);
+  console.error(`${C.dim}[postgresdb-mcp]${C.reset} ${C.red}fatal error${C.reset}`, error);
   process.exit(1);
 });
 
