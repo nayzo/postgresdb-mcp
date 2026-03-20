@@ -8,8 +8,17 @@
       "password": "postgres",
       "schema": "public"
     },
-    "staging": {
-      "host": "your-aurora-cluster.cluster-xxxx.eu-west-1.rds.amazonaws.com",
+    "tst": {
+      "host": "your-test-cluster.cluster-xxxx.region.rds.amazonaws.com",
+      "port": 5432,
+      "database": "tst_mydb",
+      "user": "tst_user",
+      "password": "your-test-password",
+      "schema": "public",
+      "ssl": true
+    },
+    "stg": {
+      "host": "your-staging-cluster.cluster-xxxx.region.rds.amazonaws.com",
       "port": 5432,
       "database": "stg_mydb",
       "user": "stg_user",
@@ -17,8 +26,18 @@
       "schema": "public",
       "ssl": true
     },
+    "preprod": {
+      "host": "your-preprod-cluster.cluster-xxxx.region.rds.amazonaws.com",
+      "port": 5432,
+      "database": "preprod_mydb",
+      "user": "preprod_user",
+      "password": "your-preprod-password",
+      "schema": "public",
+      "ssl": true,
+      "protected": true
+    },
     "prod": {
-      "host": "your-prod-cluster.cluster-xxxx.eu-west-1.rds.amazonaws.com",
+      "host": "your-prod-cluster.cluster-xxxx.region.rds.amazonaws.com",
       "port": 5432,
       "database": "prod_mydb",
       "user": "prod_user",

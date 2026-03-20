@@ -2,6 +2,10 @@ node_modules/
 dist/
 *.log
 .env
+.env.*
+!.env.dist
 .DS_Store
 *.tsbuildinfo
 config.json
+*.backup
+.idea/

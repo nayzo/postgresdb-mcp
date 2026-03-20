@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## Features
 
-- **Multi-environment** — connect to any number of databases (local, staging, prod…) from a single config file
+- **Multi-environment** — connect to any number of databases (local, tst, stg, preprod, prod…) from a single config file
 - **Write protection** — mark environments as `protected` to require explicit confirmation before any write operation
 - **5 tools** — query, list-tables, describe-table, list-schemas, list-environments
 - **Connection pooling** — up to 5 connections per environment, with SSL support for remote databases
@@ -27,6 +27,8 @@ Copy the example config and fill in your database credentials:
 cp config.example.json config.json
 ```
 
+Edit `config.json` with your environments. You can define as many as needed — the environment names are free-form (anything works: `local`, `tst`, `stg`, `preprod`, `prod`, `replica`, etc.):
+
 ```json
 {
   "environments": {
@@ -38,12 +40,40 @@ cp config.example.json config.json
       "password": "postgres",
       "schema": "public"
     },
+    "tst": {
+      "host": "your-test-cluster.cluster-xxxx.region.rds.amazonaws.com",
+      "port": 5432,
+      "database": "tst_mydb",
+      "user": "tst_user",
+      "password": "your-test-password",
+      "schema": "public",
+      "ssl": true
+    },
+    "stg": {
+      "host": "your-staging-cluster.cluster-xxxx.region.rds.amazonaws.com",
+      "port": 5432,
+      "database": "stg_mydb",
+      "user": "stg_user",
+      "password": "your-staging-password",
+      "schema": "public",
+      "ssl": true
+    },
+    "preprod": {
+      "host": "your-preprod-cluster.cluster-xxxx.region.rds.amazonaws.com",
+      "port": 5432,
+      "database": "preprod_mydb",
+      "user": "preprod_user",
+      "password": "your-preprod-password",
+      "schema": "public",
+      "ssl": true,
+      "protected": true
+    },
     "prod": {
-      "host": "your-cluster.rds.amazonaws.com",
+      "host": "your-prod-cluster.cluster-xxxx.region.rds.amazonaws.com",
       "port": 5432,
       "database": "prod_mydb",
       "user": "prod_user",
-      "password": "your-password",
+      "password": "your-prod-password",
       "schema": "public",
       "ssl": true,
       "protected": true
@@ -61,11 +91,11 @@ cp config.example.json config.json
 | `database` | yes | — | Database name |
 | `user` | yes | — | Database user |
 | `password` | yes | — | Database password |
-| `schema` | no | `public` | Default schema |
+| `schema` | no | `public` | Default schema for queries |
 | `ssl` | no | `false` | Enable SSL (recommended for remote DBs) |
 | `protected` | no | `false` | Require `confirm_write=true` for write operations |
 
-> `config.json` is in `.gitignore` — your credentials stay local.
+> `config.json` is listed in `.gitignore` — your credentials stay local and are never committed.
 
 ## Claude Desktop setup
 
@@ -100,7 +130,7 @@ claude mcp add postgresdb -- node /absolute/path/to/dist/index.js --config /abso
 Execute a SQL query on a target environment.
 
 ```
-Run: SELECT COUNT(*) FROM users.orders WHERE status = 'pending' on staging
+Run: SELECT COUNT(*) FROM users.orders WHERE status = 'pending' on stg
 ```
 
 Write operations on `protected` environments are blocked unless `confirm_write=true` is passed.
@@ -116,7 +146,7 @@ List all tables in the public schema on local
 Get the full structure of a table (columns, types, nullability, defaults).
 
 ```
-Describe the users table in the public schema on staging
+Describe the users table in the public schema on stg
 ```
 
 ### `list-schemas`
@@ -137,7 +167,7 @@ What environments are configured?
 
 Environments marked with `"protected": true` will block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless Claude explicitly passes `confirm_write=true`.
 
-This prevents accidental data modifications in production.
+This prevents accidental data modifications in sensitive environments such as pre-production and production.
 
 ## Development
 
