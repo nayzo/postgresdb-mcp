@@ -453,6 +453,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               type: "text",
               text: JSON.stringify(
                 {
+                  environment: env,
+                  database: ENV_CONFIGS[env].database,
+                  queryType,
+                  duration: `${duration}ms`,
                   rowCount: result.rowCount,
                   rows: result.rows,
                   fields: result.fields.map((f) => ({
@@ -491,7 +495,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
 
         return {
-          content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { environment: env, database: ENV_CONFIGS[env].database, schema, tables: result.rows },
+                null,
+                2
+              ),
+            },
+          ],
         };
       }
 
@@ -521,7 +534,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
 
         return {
-          content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { environment: env, database: ENV_CONFIGS[env].database, schema, table, columns: result.rows },
+                null,
+                2
+              ),
+            },
+          ],
         };
       }
 
@@ -544,7 +566,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
 
         return {
-          content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { environment: env, database: ENV_CONFIGS[env].database, schemas: result.rows },
+                null,
+                2
+              ),
+            },
+          ],
         };
       }
 
