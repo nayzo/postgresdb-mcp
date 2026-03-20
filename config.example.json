@@ -15,7 +15,8 @@
       "user": "tst_user",
       "password": "your-test-password",
       "schema": "public",
-      "ssl": true
+      "ssl": true,
+      "sslRejectUnauthorized": false
     },
     "stg": {
       "host": "your-staging-cluster.cluster-xxxx.region.rds.amazonaws.com",
@@ -24,7 +25,8 @@
       "user": "stg_user",
       "password": "your-staging-password",
       "schema": "public",
-      "ssl": true
+      "ssl": true,
+      "sslRejectUnauthorized": false
     },
     "preprod": {
       "host": "your-preprod-cluster.cluster-xxxx.region.rds.amazonaws.com",

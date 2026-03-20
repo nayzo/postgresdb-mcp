@@ -7,8 +7,9 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 - **Multi-environment** — connect to any number of databases (local, tst, stg, preprod, prod…) from a single config file
 - **Write protection** — mark environments as `protected` to require explicit confirmation before any write operation
 - **5 tools** — query, list-tables, describe-table, list-schemas, list-environments
-- **Connection pooling** — up to 5 connections per environment, with SSL support for remote databases
-- **Parameterized queries** — safe execution with user-provided values
+- **Connection pooling** — up to 5 connections per environment, with automatic pool recovery on error
+- **Parameterized queries** — safe execution with `$1`, `$2` … placeholders
+- **SSL support** — configurable per environment with certificate verification control
 
 ## Installation
 
@@ -40,15 +41,6 @@ Edit `config.json` with your environments. You can define as many as needed — 
       "password": "postgres",
       "schema": "public"
     },
-    "tst": {
-      "host": "your-test-cluster.cluster-xxxx.region.rds.amazonaws.com",
-      "port": 5432,
-      "database": "tst_mydb",
-      "user": "tst_user",
-      "password": "your-test-password",
-      "schema": "public",
-      "ssl": true
-    },
     "stg": {
       "host": "your-staging-cluster.cluster-xxxx.region.rds.amazonaws.com",
       "port": 5432,
@@ -56,17 +48,8 @@ Edit `config.json` with your environments. You can define as many as needed — 
       "user": "stg_user",
       "password": "your-staging-password",
       "schema": "public",
-      "ssl": true
-    },
-    "preprod": {
-      "host": "your-preprod-cluster.cluster-xxxx.region.rds.amazonaws.com",
-      "port": 5432,
-      "database": "preprod_mydb",
-      "user": "preprod_user",
-      "password": "your-preprod-password",
-      "schema": "public",
       "ssl": true,
-      "protected": true
+      "sslRejectUnauthorized": false
     },
     "prod": {
       "host": "your-prod-cluster.cluster-xxxx.region.rds.amazonaws.com",
@@ -93,6 +76,7 @@ Edit `config.json` with your environments. You can define as many as needed — 
 | `password` | yes | — | Database password |
 | `schema` | no | `public` | Default schema for queries |
 | `ssl` | no | `false` | Enable SSL (recommended for remote DBs) |
+| `sslRejectUnauthorized` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test) — **never disable in production** |
 | `protected` | no | `false` | Require `confirm_write=true` for write operations |
 
 > `config.json` is listed in `.gitignore` — your credentials stay local and are never committed.
@@ -181,6 +165,8 @@ What environments are configured?
 
 Environments marked with `"protected": true` will block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless `confirm_write=true` is explicitly passed by the AI.
 
+The check is applied after stripping SQL comments and handles multi-statement queries and CTEs containing embedded writes.
+
 This prevents accidental data modifications in sensitive environments such as pre-production and production.
 
 ## Development
@@ -189,6 +175,8 @@ This prevents accidental data modifications in sensitive environments such as pr
 npm run build   # compile TypeScript
 npm run watch   # watch mode
 ```
+
+**Requirements:** Node.js >= 18
 
 ## License
 

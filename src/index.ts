@@ -21,11 +21,47 @@ interface EnvConfig {
   password: string;
   schema?: string;
   ssl?: boolean;
+  /** Set to false only for self-signed certificates (dev/test). Always true in production. Default: true */
+  sslRejectUnauthorized?: boolean;
   protected?: boolean;
 }
 
 interface Config {
   environments: Record<string, EnvConfig>;
+}
+
+// ─── Config loading ────────────────────────────────────────────────────────
+
+function validateConfig(raw: unknown): Config {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("Config must be a JSON object.");
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj.environments !== "object" || obj.environments === null) {
+    throw new Error('Config must have an "environments" object.');
+  }
+
+  const envs = obj.environments as Record<string, unknown>;
+
+  for (const [name, env] of Object.entries(envs)) {
+    if (typeof env !== "object" || env === null) {
+      throw new Error(`Environment "${name}" must be an object.`);
+    }
+
+    const e = env as Record<string, unknown>;
+
+    for (const field of ["host", "database", "user", "password"] as const) {
+      if (typeof e[field] !== "string" || !e[field]) {
+        throw new Error(
+          `Environment "${name}" is missing required string field "${field}".`
+        );
+      }
+    }
+  }
+
+  return raw as Config;
 }
 
 function loadConfig(): Config {
@@ -46,13 +82,8 @@ function loadConfig(): Config {
   }
 
   try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Config;
-
-    if (!config.environments || typeof config.environments !== "object") {
-      throw new Error('Config must have an "environments" object.');
-    }
-
-    return config;
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    return validateConfig(raw);
   } catch (err) {
     console.error(`Failed to load config: ${(err as Error).message}`);
     process.exit(1);
@@ -63,21 +94,9 @@ const CONFIG = loadConfig();
 const ENV_CONFIGS = CONFIG.environments;
 const ENV_NAMES = Object.keys(ENV_CONFIGS);
 
+// ─── Connection pool ────────────────────────────────────────────────────────
+
 const pools: Record<string, pg.Pool> = {};
-
-const WRITE_KEYWORDS = [
-  "UPDATE", "DELETE", "INSERT", "DROP", "TRUNCATE",
-  "ALTER", "CREATE", "REPLACE", "GRANT", "REVOKE",
-];
-
-function isDangerousQuery(sql: string): boolean {
-  const normalized = sql.trim().toUpperCase();
-  return WRITE_KEYWORDS.some(
-    (kw) =>
-      normalized.startsWith(kw) ||
-      new RegExp(`^(WITH[\\s\\S]*?)?\\s*${kw}\\s`, "i").test(normalized)
-  );
-}
 
 function getPool(envName: string): pg.Pool {
   if (pools[envName]) return pools[envName];
@@ -89,7 +108,7 @@ function getPool(envName: string): pg.Pool {
     );
   }
 
-  pools[envName] = new Pool({
+  const pool = new Pool({
     host: config.host,
     port: config.port ?? 5432,
     database: config.database,
@@ -98,15 +117,78 @@ function getPool(envName: string): pg.Pool {
     max: 5,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
-    ssl: config.ssl ? { rejectUnauthorized: false } : false,
+    ssl: config.ssl
+      ? { rejectUnauthorized: config.sslRejectUnauthorized ?? true }
+      : false,
   });
 
-  pools[envName].on("error", (err) => {
-    console.error(`Pool error (${envName}):`, err.message);
+  pool.on("error", (err) => {
+    console.error(`[postgresdb-mcp] Pool error on "${envName}":`, err.message);
+    // Remove from cache so the next request gets a fresh pool
+    pool.end().catch(() => {});
+    delete pools[envName];
   });
 
-  return pools[envName];
+  pools[envName] = pool;
+  return pool;
 }
+
+// ─── Query safety ───────────────────────────────────────────────────────────
+
+const WRITE_KEYWORDS = [
+  "UPDATE", "DELETE", "INSERT", "DROP", "TRUNCATE",
+  "ALTER", "CREATE", "REPLACE", "GRANT", "REVOKE",
+];
+
+/** Strip SQL single-line (--) and multi-line (/* *\/) comments. */
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ");
+}
+
+/**
+ * Returns true if the SQL contains a write operation.
+ * Handles:
+ *   - Direct writes: DELETE FROM ..., UPDATE ...
+ *   - Multi-statement: SELECT 1; DELETE FROM users
+ *   - CTEs with embedded writes: WITH x AS (UPDATE ...) SELECT * FROM x
+ *   - Comment-based bypass: -- DELETE\nSELECT ...
+ */
+function isDangerousQuery(sql: string): boolean {
+  const normalized = stripSqlComments(sql).toUpperCase();
+
+  // Split on semicolons to catch multi-statement attacks
+  const statements = normalized.split(";").map((s) => s.trim()).filter(Boolean);
+
+  return statements.some((stmt) => {
+    // Direct write at statement start: "DELETE ...", "UPDATE ...", etc.
+    if (WRITE_KEYWORDS.some((kw) => new RegExp(`^${kw}(\\s|$)`).test(stmt))) {
+      return true;
+    }
+
+    // CTE containing a write: "WITH x AS (UPDATE ...) SELECT ..."
+    if (/^WITH[\s(]/.test(stmt)) {
+      return WRITE_KEYWORDS.some((kw) =>
+        new RegExp(`\\b${kw}\\b`).test(stmt)
+      );
+    }
+
+    return false;
+  });
+}
+
+/** Runtime validation for query parameters. */
+function isValidParam(v: unknown): v is string | number | boolean | null {
+  return (
+    v === null ||
+    typeof v === "string" ||
+    typeof v === "number" ||
+    typeof v === "boolean"
+  );
+}
+
+// ─── MCP tools ──────────────────────────────────────────────────────────────
 
 function buildTools(): Tool[] {
   const envEnum = ENV_NAMES;
@@ -124,7 +206,7 @@ function buildTools(): Tool[] {
 
 - Always use schema-qualified table names (e.g., schema.table_name)
 - Prefer SELECT queries; use write operations with care
-- Use parameterized queries for user-provided values${protectionNote}`,
+- Use parameterized queries ($1, $2 …) for user-provided values${protectionNote}`,
       inputSchema: {
         type: "object",
         properties: {
@@ -139,12 +221,12 @@ function buildTools(): Tool[] {
           },
           params: {
             type: "array",
-            description: "Optional parameters for parameterized queries",
+            description: "Optional parameters for parameterized queries ($1, $2 …)",
             items: { type: ["string", "number", "boolean", "null"] },
           },
           confirm_write: {
             type: "boolean",
-            description: `Required to execute write operations on protected environments (${protectedEnvs.join(", ") || "none"})`,
+            description: `Set to true to confirm write operations on protected environments (${protectedEnvs.join(", ") || "none"})`,
             default: false,
           },
         },
@@ -224,8 +306,10 @@ function buildTools(): Tool[] {
 
 const TOOLS = buildTools();
 
+// ─── MCP server ─────────────────────────────────────────────────────────────
+
 const server = new Server(
-  { name: "postgresdb-mcp", version: "2.0.0" },
+  { name: "postgresdb-mcp", version: "2.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -269,6 +353,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error(
             `Unknown environment: "${env}". Available: ${ENV_NAMES.join(", ")}`
           );
+        }
+
+        if (params !== undefined) {
+          const invalidIndex = params.findIndex((p) => !isValidParam(p));
+          if (invalidIndex !== -1) {
+            throw new Error(
+              `Invalid parameter at index ${invalidIndex}: ${JSON.stringify(params[invalidIndex])}. Allowed types: string, number, boolean, null.`
+            );
+          }
         }
 
         if (envConfig.protected && isDangerousQuery(sql) && !confirm_write) {
@@ -411,15 +504,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// ─── Startup & shutdown ──────────────────────────────────────────────────────
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`PostgreSQL MCP Server v2.0.0 started`);
-  console.error(`Environments: ${ENV_NAMES.join(", ")}`);
+  console.error(`[postgresdb-mcp] v2.1.0 started`);
+  console.error(`[postgresdb-mcp] Environments: ${ENV_NAMES.join(", ")}`);
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  console.error("[postgresdb-mcp] Fatal error:", error);
   process.exit(1);
 });
 

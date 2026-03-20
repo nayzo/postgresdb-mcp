@@ -1,23 +1,31 @@
 {
   "name": "postgresdb-mcp",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "MCP server for multi-environment PostgreSQL database access",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "postgresdb-mcp": "dist/index.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
-    "dev": "tsc && node dist/index.js"
+    "dev": "tsc && node dist/index.js",
+    "prepare": "npm run build",
+    "test": "echo \"No tests configured\" && exit 0"
   },
   "keywords": [
     "mcp",
     "postgresql",
+    "postgres",
     "database",
-    "model-context-protocol"
+    "model-context-protocol",
+    "ai",
+    "llm"
   ],
   "author": "Ala Eddine Khefifi",
   "license": "MIT",

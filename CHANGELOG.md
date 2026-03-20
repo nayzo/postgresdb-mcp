@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.1.0] - 2026-03-20
+
+### Added
+- `sslRejectUnauthorized` config option per environment (default: `true`) — allows self-signed certs in dev/test without disabling cert verification in production
+- Runtime config validation with clear error messages for missing or malformed fields
+- Runtime parameter validation — rejects non-scalar values before they reach the database driver
+- Pool auto-recovery: on a fatal pool error, the pool is torn down and recreated on the next request
+
+### Changed
+- `isDangerousQuery()` now strips SQL comments (`--`, `/* */`) before checking for write keywords, preventing comment-based bypass
+- `isDangerousQuery()` now splits on `;` to catch multi-statement attacks (e.g. `SELECT 1; DELETE FROM users`)
+- `isDangerousQuery()` detects write keywords inside CTEs (`WITH x AS (UPDATE ...) SELECT * FROM x`)
+- Server startup logs now include a `[postgresdb-mcp]` prefix for easier filtering
+- Version bumped in MCP server metadata (`name`, startup log)
+
+### Fixed
+- SSL connections previously used `rejectUnauthorized: false` unconditionally — now defaults to `true` (secure)
+- Configs with wrong field types now fail at startup with a clear error instead of a cryptic driver error at query time
+
 ## [2.0.0] - 2026-02-25
 
 ### Breaking changes
