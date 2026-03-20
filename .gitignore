@@ -7,5 +7,4 @@ dist/
 config.json
 .DS_Store
 *.tsbuildinfo
-*.backup
 .idea/
