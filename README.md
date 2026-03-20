@@ -45,7 +45,6 @@ POSTGRES_STG_DATABASE=stg_mydb
 POSTGRES_STG_USER=stg_user
 POSTGRES_STG_PASSWORD=your-stg-password
 POSTGRES_STG_SSL=true
-POSTGRES_STG_SSL_REJECT_UNAUTHORIZED=false
 
 # Production
 POSTGRES_PROD_HOST=your-env-host
@@ -67,7 +66,7 @@ POSTGRES_PROD_ALLOW_WRITES=true
 | `PASSWORD` | yes | - | Database password |
 | `SCHEMA` | no | `public` | Default schema for queries |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
-| `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test), never in production |
+| `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Default `true` — only set to `false` if your DB uses a self-signed cert and you have no other option. Never disable in production. |
 | `ALLOW_WRITES` | no | `false` | `true`: writes allowed, but require `confirm_write="WRITE"` to execute. `false` (default): writes completely blocked, no confirmation shown |
 
 ## MCP client setup
