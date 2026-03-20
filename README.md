@@ -1,6 +1,6 @@
 # postgresdb-mcp
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives Claude direct access to PostgreSQL databases across multiple environments.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives any MCP-compatible AI assistant direct access to PostgreSQL databases across multiple environments.
 
 ## Features
 
@@ -97,7 +97,11 @@ Edit `config.json` with your environments. You can define as many as needed — 
 
 > `config.json` is listed in `.gitignore` — your credentials stay local and are never committed.
 
-## Claude Desktop setup
+## MCP client setup
+
+This server works with any MCP-compatible client. Below are examples for common ones.
+
+### Claude Desktop
 
 Add to `~/.config/Claude/claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -118,11 +122,21 @@ Add to `~/.config/Claude/claude_desktop_config.json` (macOS: `~/Library/Applicat
 
 Restart Claude Desktop after editing.
 
-## Claude CLI setup
+### Claude CLI
 
 ```bash
 claude mcp add postgresdb -- node /absolute/path/to/dist/index.js --config /absolute/path/to/config.json
 ```
+
+### Other MCP clients
+
+Start the server manually — it communicates over stdio:
+
+```bash
+node /absolute/path/to/postgresdb-mcp/dist/index.js --config /absolute/path/to/your/config.json
+```
+
+Refer to your client's documentation for how to register an MCP server using stdio transport.
 
 ## Available tools
 
@@ -165,7 +179,7 @@ What environments are configured?
 
 ## Write protection
 
-Environments marked with `"protected": true` will block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless Claude explicitly passes `confirm_write=true`.
+Environments marked with `"protected": true` will block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless `confirm_write=true` is explicitly passed by the AI.
 
 This prevents accidental data modifications in sensitive environments such as pre-production and production.
 
