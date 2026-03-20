@@ -5,7 +5,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 ## Features
 
 - **Multi-environment**: connect to any number of databases (local, tst, stg, preprod, prod…) from a single `.env` file
-- **Write protection**: mark environments as `protected` to require explicit confirmation before any write operation
+- **Write protection**: two modes per environment — writes disabled by default, or confirmation required via `confirm_write="WRITE"`
 - **5 tools**: query, list-tables, describe-table, list-schemas, list-environments
 - **Connection pooling**: up to 5 connections per environment, with automatic pool recovery on error
 - **Parameterized queries**: safe execution with `$1`, `$2` … placeholders
@@ -116,13 +116,13 @@ Refer to your client's documentation for how to register an MCP server using std
 ## Available tools
 
 ### `query`
-Execute a SQL query on a target environment.
+Execute a SQL query on a target environment. Returns `environment`, `database`, `queryType`, `duration`, `rowCount`, `rows`, and `fields`.
 
 ```
 Run: SELECT COUNT(*) FROM users.orders WHERE status = 'pending' on stg
 ```
 
-Write operations on `protected` environments are blocked unless `confirm_write=true` is passed.
+Write operations are subject to the environment's write protection mode (see [Write protection](#write-protection)). To confirm a write on an environment with `WRITE_PROTECTION=true`, pass `confirm_write="WRITE"`.
 
 ### `list-tables`
 List all tables in a schema.
