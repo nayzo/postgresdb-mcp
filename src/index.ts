@@ -30,62 +30,97 @@ interface Config {
   environments: Record<string, EnvConfig>;
 }
 
-// ─── Config loading ────────────────────────────────────────────────────────
+// ─── Config loading (.env) ──────────────────────────────────────────────────
 
-function validateConfig(raw: unknown): Config {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("Config must be a JSON object.");
+function parseEnvFile(filePath: string): Record<string, string> {
+  const vars: Record<string, string> = {};
+
+  for (const line of fs.readFileSync(filePath, "utf-8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1) continue;
+
+    const key = trimmed.slice(0, eqIndex).trim();
+    const raw = trimmed.slice(eqIndex + 1).trim();
+    // Strip optional surrounding quotes
+    vars[key] = raw.replace(/^(["'])(.*)\1$/, "$2");
   }
 
-  const obj = raw as Record<string, unknown>;
+  return vars;
+}
 
-  if (typeof obj.environments !== "object" || obj.environments === null) {
-    throw new Error('Config must have an "environments" object.');
+function buildConfigFromEnv(vars: Record<string, string>): Config {
+  // Auto-discover environments by scanning for POSTGRES_{ENV}_HOST variables
+  const envNames: string[] = [];
+
+  for (const key of Object.keys(vars)) {
+    const match = key.match(/^POSTGRES_([A-Z0-9]+)_HOST$/);
+    if (match) envNames.push(match[1].toLowerCase());
   }
 
-  const envs = obj.environments as Record<string, unknown>;
+  if (envNames.length === 0) {
+    throw new Error(
+      "No environments found. Define at least one POSTGRES_{ENV}_HOST variable in your .env file."
+    );
+  }
 
-  for (const [name, env] of Object.entries(envs)) {
-    if (typeof env !== "object" || env === null) {
-      throw new Error(`Environment "${name}" must be an object.`);
+  const environments: Record<string, EnvConfig> = {};
+
+  for (const env of envNames) {
+    const p = `POSTGRES_${env.toUpperCase()}`;
+    const host = vars[`${p}_HOST`];
+    const database = vars[`${p}_DATABASE`];
+    const user = vars[`${p}_USER`];
+    const password = vars[`${p}_PASSWORD`];
+
+    if (!host || !database || !user || !password) {
+      throw new Error(
+        `Environment "${env}": missing required variable(s). Expected: ${p}_HOST, ${p}_DATABASE, ${p}_USER, ${p}_PASSWORD.`
+      );
     }
 
-    const e = env as Record<string, unknown>;
+    const portRaw = vars[`${p}_PORT`];
+    const sslRejectRaw = vars[`${p}_SSL_REJECT_UNAUTHORIZED`];
 
-    for (const field of ["host", "database", "user", "password"] as const) {
-      if (typeof e[field] !== "string" || !e[field]) {
-        throw new Error(
-          `Environment "${name}" is missing required string field "${field}".`
-        );
-      }
-    }
+    environments[env] = {
+      host,
+      port: portRaw ? parseInt(portRaw, 10) : undefined,
+      database,
+      user,
+      password,
+      schema: vars[`${p}_SCHEMA`] || undefined,
+      ssl: vars[`${p}_SSL`] === "true",
+      sslRejectUnauthorized: sslRejectRaw !== undefined ? sslRejectRaw !== "false" : true,
+      protected: vars[`${p}_PROTECTED`] === "true",
+    };
   }
 
-  return raw as Config;
+  return { environments };
 }
 
 function loadConfig(): Config {
   const args = process.argv.slice(2);
-  const configIndex = args.indexOf("--config");
+  const envFlagIndex = args.indexOf("--env");
 
-  if (configIndex === -1 || !args[configIndex + 1]) {
-    console.error("Usage: postgresdb-mcp --config /path/to/config.json");
-    console.error("See config.example.json for the expected format.");
-    process.exit(1);
-  }
+  const envFilePath =
+    envFlagIndex !== -1 && args[envFlagIndex + 1]
+      ? path.resolve(args[envFlagIndex + 1])
+      : path.resolve(".env");
 
-  const configPath = path.resolve(args[configIndex + 1]);
-
-  if (!fs.existsSync(configPath)) {
-    console.error(`Config file not found: ${configPath}`);
+  if (!fs.existsSync(envFilePath)) {
+    console.error(`[postgresdb-mcp] .env file not found: ${envFilePath}`);
+    console.error(`[postgresdb-mcp] Usage: postgresdb-mcp --env /path/to/.env`);
+    console.error(`[postgresdb-mcp] See .env.dist for the expected format.`);
     process.exit(1);
   }
 
   try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    return validateConfig(raw);
+    const vars = parseEnvFile(envFilePath);
+    return buildConfigFromEnv(vars);
   } catch (err) {
-    console.error(`Failed to load config: ${(err as Error).message}`);
+    console.error(`[postgresdb-mcp] Failed to load config: ${(err as Error).message}`);
     process.exit(1);
   }
 }
@@ -169,9 +204,7 @@ function isDangerousQuery(sql: string): boolean {
 
     // CTE containing a write: "WITH x AS (UPDATE ...) SELECT ..."
     if (/^WITH[\s(]/.test(stmt)) {
-      return WRITE_KEYWORDS.some((kw) =>
-        new RegExp(`\\b${kw}\\b`).test(stmt)
-      );
+      return WRITE_KEYWORDS.some((kw) => new RegExp(`\\b${kw}\\b`).test(stmt));
     }
 
     return false;

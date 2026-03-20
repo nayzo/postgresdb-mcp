@@ -2,10 +2,17 @@
 
 ## [2.1.0] - 2026-03-20
 
+### Breaking changes
+- Config now loaded from a `.env` file instead of `config.json`
+  - Old: `postgresdb-mcp --config /path/to/config.json`
+  - New: `postgresdb-mcp --env /path/to/.env` (or `.env` in CWD by default)
+- `config.json` and `config.example.json` removed: use `.env.dist` as the template
+
 ### Added
-- `sslRejectUnauthorized` config option per environment (default: `true`) — allows self-signed certs in dev/test without disabling cert verification in production
+- `.env`-based configuration: environments are auto-discovered from `POSTGRES_{ENV}_HOST` variables
+- `POSTGRES_{ENV}_SSL_REJECT_UNAUTHORIZED` variable (default: `true`): allows self-signed certs in dev/test without disabling cert verification in production
 - Runtime config validation with clear error messages for missing or malformed fields
-- Runtime parameter validation — rejects non-scalar values before they reach the database driver
+- Runtime parameter validation: rejects non-scalar values before they reach the database driver
 - Pool auto-recovery: on a fatal pool error, the pool is torn down and recreated on the next request
 
 ### Changed
@@ -13,17 +20,16 @@
 - `isDangerousQuery()` now splits on `;` to catch multi-statement attacks (e.g. `SELECT 1; DELETE FROM users`)
 - `isDangerousQuery()` detects write keywords inside CTEs (`WITH x AS (UPDATE ...) SELECT * FROM x`)
 - Server startup logs now include a `[postgresdb-mcp]` prefix for easier filtering
-- Version bumped in MCP server metadata (`name`, startup log)
 
 ### Fixed
-- SSL connections previously used `rejectUnauthorized: false` unconditionally — now defaults to `true` (secure)
+- SSL connections previously used `rejectUnauthorized: false` unconditionally, now defaults to `true`
 - Configs with wrong field types now fail at startup with a clear error instead of a cryptic driver error at query time
 
 ## [2.0.0] - 2026-02-25
 
 ### Breaking changes
 - Config is now loaded from a JSON file passed via `--config /path/to/config.json`
-- Credentials are no longer hardcoded — see `config.example.json`
+- Credentials are no longer hardcoded
 
 ### Added
 - File-based configuration: define any number of environments in a single JSON file

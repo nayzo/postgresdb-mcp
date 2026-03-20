@@ -4,12 +4,12 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## Features
 
-- **Multi-environment** — connect to any number of databases (local, tst, stg, preprod, prod…) from a single config file
-- **Write protection** — mark environments as `protected` to require explicit confirmation before any write operation
-- **5 tools** — query, list-tables, describe-table, list-schemas, list-environments
-- **Connection pooling** — up to 5 connections per environment, with automatic pool recovery on error
-- **Parameterized queries** — safe execution with `$1`, `$2` … placeholders
-- **SSL support** — configurable per environment with certificate verification control
+- **Multi-environment**: connect to any number of databases (local, tst, stg, preprod, prod…) from a single `.env` file
+- **Write protection**: mark environments as `protected` to require explicit confirmation before any write operation
+- **5 tools**: query, list-tables, describe-table, list-schemas, list-environments
+- **Connection pooling**: up to 5 connections per environment, with automatic pool recovery on error
+- **Parameterized queries**: safe execution with `$1`, `$2` … placeholders
+- **SSL support**: configurable per environment with certificate verification control
 
 ## Installation
 
@@ -22,64 +22,53 @@ npm run build
 
 ## Configuration
 
-Copy the example config and fill in your database credentials:
+Copy the example env file and fill in your credentials:
 
 ```bash
-cp config.example.json config.json
+cp .env.dist .env
 ```
 
-Edit `config.json` with your environments. You can define as many as needed — the environment names are free-form (anything works: `local`, `tst`, `stg`, `preprod`, `prod`, `replica`, etc.):
+`.env` is gitignored so your credentials stay local and are never committed.
 
-```json
-{
-  "environments": {
-    "local": {
-      "host": "localhost",
-      "port": 5432,
-      "database": "mydb",
-      "user": "postgres",
-      "password": "postgres",
-      "schema": "public"
-    },
-    "stg": {
-      "host": "your-staging-cluster.cluster-xxxx.region.rds.amazonaws.com",
-      "port": 5432,
-      "database": "stg_mydb",
-      "user": "stg_user",
-      "password": "your-staging-password",
-      "schema": "public",
-      "ssl": true,
-      "sslRejectUnauthorized": false
-    },
-    "prod": {
-      "host": "your-prod-cluster.cluster-xxxx.region.rds.amazonaws.com",
-      "port": 5432,
-      "database": "prod_mydb",
-      "user": "prod_user",
-      "password": "your-prod-password",
-      "schema": "public",
-      "ssl": true,
-      "protected": true
-    }
-  }
-}
+Edit `.env` with your database credentials. Environments are auto-discovered: any `POSTGRES_{ENV}_HOST` variable defines a new environment. The order in the file is preserved.
+
+```env
+# Local
+POSTGRES_LOCAL_HOST=localhost
+POSTGRES_LOCAL_DATABASE=mydb
+POSTGRES_LOCAL_USER=postgres
+POSTGRES_LOCAL_PASSWORD=postgres
+
+# Staging
+POSTGRES_STG_HOST=your-env-host
+POSTGRES_STG_DATABASE=stg_mydb
+POSTGRES_STG_USER=stg_user
+POSTGRES_STG_PASSWORD=your-stg-password
+POSTGRES_STG_SSL=true
+POSTGRES_STG_SSL_REJECT_UNAUTHORIZED=false
+
+# Production
+POSTGRES_PROD_HOST=your-env-host
+POSTGRES_PROD_DATABASE=prod_mydb
+POSTGRES_PROD_USER=prod_user
+POSTGRES_PROD_PASSWORD=your-prod-password
+POSTGRES_PROD_SSL=true
+POSTGRES_PROD_PROTECTED=true
 ```
 
-**Config options per environment:**
+**Available variables per environment** (prefix: `POSTGRES_{ENV}_`):
 
-| Field | Required | Default | Description |
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| `host` | yes | — | PostgreSQL host |
-| `port` | no | `5432` | PostgreSQL port |
-| `database` | yes | — | Database name |
-| `user` | yes | — | Database user |
-| `password` | yes | — | Database password |
-| `schema` | no | `public` | Default schema for queries |
-| `ssl` | no | `false` | Enable SSL (recommended for remote DBs) |
-| `sslRejectUnauthorized` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test) — **never disable in production** |
-| `protected` | no | `false` | Require `confirm_write=true` for write operations |
-
-> `config.json` is listed in `.gitignore` — your credentials stay local and are never committed.
+| `HOST` | yes | - | PostgreSQL host |
+| `PORT` | no | `5432` | PostgreSQL port |
+| `DATABASE` | yes | - | Database name |
+| `USER` | yes | - | Database user |
+| `PASSWORD` | yes | - | Database password |
+| `SCHEMA` | no | `public` | Default schema for queries |
+| `SSL` | no | `false` | Enable SSL (`true`/`false`) |
+| `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Set to `false` only for self-signed certs (dev/test), never in production |
+| `PROTECTED` | no | `false` | Require `confirm_write=true` for write operations |
 
 ## MCP client setup
 
@@ -96,8 +85,8 @@ Add to `~/.config/Claude/claude_desktop_config.json` (macOS: `~/Library/Applicat
       "command": "node",
       "args": [
         "/absolute/path/to/postgresdb-mcp/dist/index.js",
-        "--config",
-        "/absolute/path/to/your/config.json"
+        "--env",
+        "/absolute/path/to/.env"
       ]
     }
   }
@@ -109,16 +98,18 @@ Restart Claude Desktop after editing.
 ### Claude CLI
 
 ```bash
-claude mcp add postgresdb -- node /absolute/path/to/dist/index.js --config /absolute/path/to/config.json
+claude mcp add postgresdb -- node /absolute/path/to/dist/index.js --env /absolute/path/to/.env
 ```
 
 ### Other MCP clients
 
-Start the server manually — it communicates over stdio:
+Start the server manually, it communicates over stdio:
 
 ```bash
-node /absolute/path/to/postgresdb-mcp/dist/index.js --config /absolute/path/to/your/config.json
+node /absolute/path/to/postgresdb-mcp/dist/index.js --env /absolute/path/to/.env
 ```
+
+If `--env` is omitted, the server looks for a `.env` file in the current working directory.
 
 Refer to your client's documentation for how to register an MCP server using stdio transport.
 
@@ -163,11 +154,9 @@ What environments are configured?
 
 ## Write protection
 
-Environments marked with `"protected": true` will block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless `confirm_write=true` is explicitly passed by the AI.
+Environments with `POSTGRES_{ENV}_PROTECTED=true` block any write operation (`UPDATE`, `DELETE`, `INSERT`, `DROP`, `TRUNCATE`, `ALTER`, `CREATE`, `REPLACE`, `GRANT`, `REVOKE`) unless `confirm_write=true` is explicitly passed by the AI.
 
 The check is applied after stripping SQL comments and handles multi-statement queries and CTEs containing embedded writes.
-
-This prevents accidental data modifications in sensitive environments such as pre-production and production.
 
 ## Development
 
