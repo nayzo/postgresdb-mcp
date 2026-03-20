@@ -339,6 +339,18 @@ function buildTools(): Tool[] {
 
 const TOOLS = buildTools();
 
+// ─── Logging ────────────────────────────────────────────────────────────────
+
+function log(tool: string, env: string | null, details: Record<string, unknown>): void {
+  const parts: string[] = [
+    `[postgresdb-mcp]`,
+    `[${tool}]`,
+    ...(env ? [`[${env}]`] : []),
+    ...Object.entries(details).map(([k, v]) => `${k}=${v}`),
+  ];
+  console.error(parts.join(" "));
+}
+
 // ─── MCP server ─────────────────────────────────────────────────────────────
 
 const server = new Server(
@@ -354,6 +366,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "list-environments": {
+        log("list-environments", null, { count: ENV_NAMES.length, envs: ENV_NAMES.join(",") });
+
         const envs = ENV_NAMES.map((envName) => ({
           name: envName,
           host: ENV_CONFIGS[envName].host,
@@ -420,7 +434,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const pool = getPool(env);
+        const queryType = stripSqlComments(sql).trim().split(/\s+/)[0].toUpperCase();
+        const t0 = Date.now();
         const result = await pool.query(sql, params as unknown[]);
+        const duration = Date.now() - t0;
+
+        log("query", env, {
+          type: queryType,
+          db: ENV_CONFIGS[env].database,
+          rows: result.rowCount ?? 0,
+          duration: `${duration}ms`,
+          protected: ENV_CONFIGS[env].protected ?? false,
+        });
 
         return {
           content: [
@@ -449,6 +474,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           schema?: string;
         };
 
+        log("list-tables", env, { schema, db: ENV_CONFIGS[env].database });
+
         const pool = getPool(env);
         const result = await pool.query(
           `SELECT
@@ -475,6 +502,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           table: string;
         };
 
+        log("describe-table", env, { schema, table, db: ENV_CONFIGS[env].database });
+
         const pool = getPool(env);
         const result = await pool.query(
           `SELECT
@@ -499,6 +528,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "list-schemas": {
         const { env } = args as { env: string };
 
+        log("list-schemas", env, { db: ENV_CONFIGS[env].database });
+
         const pool = getPool(env);
         const result = await pool.query(
           `SELECT
@@ -521,15 +552,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[postgresdb-mcp] [${name}] error=${message}`);
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(
-            { error: error instanceof Error ? error.message : String(error) },
-            null,
-            2
-          ),
+          text: JSON.stringify({ error: message }, null, 2),
         },
       ],
       isError: true,
