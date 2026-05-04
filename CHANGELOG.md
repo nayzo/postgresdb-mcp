@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+- Hardened write detection in `query` to prevent bypasses where writes were hidden in multi-statement payloads (e.g. `PREPARE ...; EXECUTE ...`).
+- SQL safety analysis now ignores comments/quoted literals (including dollar-quoted blocks) before inspection.
+- Added DB-level enforcement: queries without explicit `confirm_write="WRITE"` now run in `BEGIN READ ONLY`, blocking side-effect writes at PostgreSQL level.
+- Added optional schema scope enforcement (`POSTGRES_{ENV}_SCHEMA`): explicit references to non-allowed schemas are blocked.
+
+### Changed
+- Write guard is now fail-closed: statements outside an explicit read-only subset (`SELECT`, `WITH`, `VALUES`, `SHOW`, `TABLE`, `EXPLAIN`) are treated as write-sensitive.
+- `list-tables`, `describe-table`, and `list-schemas` now validate unknown environments consistently before logging/querying.
+- When `POSTGRES_{ENV}_SCHEMA` is configured, `list-tables`/`describe-table` are constrained to that scope and `query` runs with `SET LOCAL search_path` for additional isolation.
+
 ## [2.1.0] - 2026-03-20
 
 ### Breaking changes

@@ -5,7 +5,8 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 ## Features
 
 - **Multi-environment**: connect to any number of databases (local, tst, stg, preprod, prod…) from a single `.env` file
-- **Write protection**: writes disabled by default (`ALLOW_WRITES=false`), or enabled with mandatory `"WRITE"` confirmation (`ALLOW_WRITES=true`)
+- **Write protection (fail-closed)**: writes disabled by default (`ALLOW_WRITES=false`), or enabled with mandatory `"WRITE"` confirmation (`ALLOW_WRITES=true`) for any statement that is not clearly read-only
+- **Schema scope control**: optionally restrict each environment to one or more schemas via `SCHEMA` (comma-separated)
 - **5 tools**: query, list-tables, describe-table, list-schemas, list-environments
 - **Connection pooling**: up to 5 connections per environment, with automatic pool recovery on error
 - **Parameterized queries**: safe execution with `$1`, `$2` … placeholders
@@ -66,7 +67,7 @@ POSTGRES_PROD_ALLOW_WRITES=false
 | `DATABASE` | yes | - | Database name |
 | `USER` | yes | - | Database user |
 | `PASSWORD` | yes | - | Database password |
-| `SCHEMA` | no | `public` | Default schema for queries |
+| `SCHEMA` | no | _all schemas_ | Schema allowlist (comma-separated). Example: `public` or `public,users`. When set, tools are scoped and queries are restricted to these schemas. |
 | `SSL` | no | `false` | Enable SSL (`true`/`false`) |
 | `SSL_REJECT_UNAUTHORIZED` | no | `true` | Verify SSL certificate. Default `true` — only set to `false` if your DB uses a self-signed cert and you have no other option. Never disable in production. |
 | `ALLOW_WRITES` | no | `false` | `true`: writes allowed, `confirm_write="WRITE"` required to execute. `false`: writes completely blocked, no confirmation shown. |
@@ -162,7 +163,31 @@ Every environment has one of two write modes, controlled by `POSTGRES_{ENV}_ALLO
 | **Blocked** (default) | `ALLOW_WRITES=false` or not set | Writes (`UPDATE`, `DELETE`, `INSERT`, `DROP`…) are immediately rejected. No confirmation prompt is shown. |
 | **Allowed with confirmation** | `ALLOW_WRITES=true` | Writes are allowed, but the AI must explicitly pass `confirm_write="WRITE"` (exact string, case-sensitive) to execute. |
 
-The check is applied after stripping SQL comments and handles multi-statement queries and CTEs containing embedded writes.
+The guard inspects SQL in a fail-closed way:
+
+- comments and quoted literals are neutralized before analysis (including dollar-quoted blocks)
+- multi-statement payloads are checked statement-by-statement
+- CTEs and hidden payloads (for example via `PREPARE ...; EXECUTE ...`) are detected
+- statements outside the explicit read-only subset (`SELECT`, `WITH`, `VALUES`, `SHOW`, `TABLE`, `EXPLAIN`) are treated as write-sensitive and require `confirm_write="WRITE"` when writes are enabled
+- defense-in-depth: when `confirm_write!="WRITE"`, queries run inside `BEGIN READ ONLY`, so accidental writes from side-effect functions are blocked at PostgreSQL level
+
+## Schema scope
+
+By default, if `POSTGRES_{ENV}_SCHEMA` is not set, the MCP can access all schemas the DB user is allowed to access.
+
+Set `POSTGRES_{ENV}_SCHEMA` to scope access per environment:
+
+- single schema: `POSTGRES_STG_SCHEMA=public`
+- multiple schemas: `POSTGRES_PROD_SCHEMA=public,users`
+
+When schema scope is configured:
+
+- `list-tables` / `describe-table` reject schemas outside the allowlist
+- `list-schemas` only returns allowed schemas
+- `query` blocks explicit references to non-allowed schemas
+- `query` executes with `SET LOCAL search_path` on allowed schema(s) for additional isolation
+
+For strongest isolation, keep using dedicated PostgreSQL users with least-privilege grants per schema.
 
 **Recommendation:** set `ALLOW_WRITES=true` on environments where you need to write from the AI (preprod, prod) — every write will require a deliberate `"WRITE"` confirmation. Leave it unset on read-only environments (replicas, analytics DBs).
 
