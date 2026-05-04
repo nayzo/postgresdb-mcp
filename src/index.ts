@@ -19,7 +19,10 @@ interface EnvConfig {
   database: string;
   user: string;
   password: string;
+  /** Backward compatibility: first allowed schema when POSTGRES_{ENV}_SCHEMA is provided. */
   schema?: string;
+  /** Optional schema allowlist parsed from POSTGRES_{ENV}_SCHEMA (comma-separated). */
+  allowedSchemas?: string[];
   ssl?: boolean;
   /** Set to false only for self-signed certificates (dev/test). Always true in production. Default: true */
   sslRejectUnauthorized?: boolean;
@@ -55,6 +58,36 @@ function parseEnvFile(filePath: string): Record<string, string> {
   return vars;
 }
 
+function canonicalizeSchemaName(schemaName: string): string {
+  const trimmed = schemaName.trim();
+  if (!trimmed) {
+    throw new Error("Schema name cannot be empty.");
+  }
+
+  const quoted = /^"([\s\S]*)"$/.exec(trimmed);
+  const unquoted = quoted ? quoted[1].replace(/""/g, '"') : trimmed;
+  if (!unquoted.trim()) {
+    throw new Error(`Schema name cannot be empty: "${schemaName}"`);
+  }
+
+  return unquoted.toLowerCase();
+}
+
+function parseSchemaScope(raw: string | undefined, variableName: string): string[] | undefined {
+  if (!raw) return undefined;
+
+  const schemas = raw
+    .split(",")
+    .map((value) => canonicalizeSchemaName(value))
+    .filter(Boolean);
+
+  if (schemas.length === 0) {
+    throw new Error(`${variableName} is set but no valid schema was provided.`);
+  }
+
+  return Array.from(new Set(schemas));
+}
+
 function buildConfigFromEnv(vars: Record<string, string>): Config {
   // Auto-discover environments by scanning for POSTGRES_{ENV}_HOST variables
   const envNames: string[] = [];
@@ -87,6 +120,7 @@ function buildConfigFromEnv(vars: Record<string, string>): Config {
 
     const portRaw = vars[`${p}_PORT`];
     const sslRejectRaw = vars[`${p}_SSL_REJECT_UNAUTHORIZED`];
+    const schemaScope = parseSchemaScope(vars[`${p}_SCHEMA`], `${p}_SCHEMA`);
 
     environments[env] = {
       host,
@@ -94,7 +128,8 @@ function buildConfigFromEnv(vars: Record<string, string>): Config {
       database,
       user,
       password,
-      schema: vars[`${p}_SCHEMA`] || undefined,
+      schema: schemaScope?.[0],
+      allowedSchemas: schemaScope,
       ssl: vars[`${p}_SSL`] === "true",
       sslRejectUnauthorized: sslRejectRaw !== undefined ? sslRejectRaw !== "false" : true,
       allowWrites: vars[`${p}_ALLOW_WRITES`] === "true",
@@ -182,15 +217,21 @@ function log(tool: string, env: string | null, details: Record<string, unknown>)
 
 const pools: Record<string, pg.Pool> = {};
 
-function getPool(envName: string): pg.Pool {
-  if (pools[envName]) return pools[envName];
-
+function getEnvConfigOrThrow(envName: string): EnvConfig {
   const config = ENV_CONFIGS[envName];
   if (!config) {
     throw new Error(
       `Unknown environment: "${envName}". Available: ${ENV_NAMES.join(", ")}`
     );
   }
+
+  return config;
+}
+
+function getPool(envName: string): pg.Pool {
+  if (pools[envName]) return pools[envName];
+
+  const config = getEnvConfigOrThrow(envName);
 
   const pool = new Pool({
     host: config.host,
@@ -219,16 +260,372 @@ function getPool(envName: string): pg.Pool {
 
 // ─── Query safety ───────────────────────────────────────────────────────────
 
+function getAllowedSchemas(config: EnvConfig): string[] {
+  return config.allowedSchemas ?? [];
+}
+
+function resolveSchemaForTool(
+  envName: string,
+  config: EnvConfig,
+  requestedSchema?: string
+): string {
+  const allowedSchemas = getAllowedSchemas(config);
+  const candidate = requestedSchema ?? config.schema ?? "public";
+  const normalized = canonicalizeSchemaName(candidate);
+
+  if (allowedSchemas.length === 0) {
+    return normalized;
+  }
+
+  if (!allowedSchemas.includes(normalized)) {
+    throw new Error(
+      `Schema "${candidate}" is not allowed on "${envName}". Allowed schemas: ${allowedSchemas.join(", ")}.`
+    );
+  }
+
+  return normalized;
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function buildSearchPath(allowedSchemas: string[]): string {
+  const searchPath = [...allowedSchemas];
+  if (!searchPath.includes("pg_catalog")) {
+    searchPath.push("pg_catalog");
+  }
+
+  return searchPath.map(quoteIdentifier).join(", ");
+}
+
+const IDENTIFIER_TOKEN = "(?:\"(?:[^\"]|\"\")+\"|[A-Za-z_][A-Za-z0-9_$]*)";
+const QUALIFIED_REFERENCE_TOKEN = `${IDENTIFIER_TOKEN}\\s*\\.\\s*${IDENTIFIER_TOKEN}`;
+
+const QUALIFIED_IDENTIFIER_REGEX = new RegExp(
+  `^\\s*(${IDENTIFIER_TOKEN})\\s*\\.\\s*(${IDENTIFIER_TOKEN})\\s*$`,
+  "i"
+);
+
+const RELATION_QUALIFIED_REF_REGEX = new RegExp(
+  `\\b(?:FROM|JOIN|UPDATE|INTO|TABLE|TRUNCATE(?:\\s+TABLE)?|ALTER\\s+TABLE|DROP\\s+TABLE|CREATE\\s+TABLE|LOCK\\s+TABLE|COMMENT\\s+ON\\s+(?:TABLE|VIEW|MATERIALIZED\\s+VIEW|SEQUENCE|INDEX|COLUMN)|REFRESH\\s+MATERIALIZED\\s+VIEW)\\s+(${QUALIFIED_REFERENCE_TOKEN})`,
+  "gi"
+);
+
+const FUNCTION_QUALIFIED_REF_REGEX = new RegExp(
+  `\\b(${QUALIFIED_REFERENCE_TOKEN})\\s*\\(`,
+  "gi"
+);
+
+function sanitizeSqlForSchemaGuard(sql: string): string {
+  let out = "";
+  let i = 0;
+
+  let inSingleQuote = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let dollarTag: string | null = null;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1] ?? "";
+
+    if (inLineComment) {
+      out += ch === "\n" ? "\n" : " ";
+      if (ch === "\n") inLineComment = false;
+      i += 1;
+      continue;
+    }
+
+    if (blockCommentDepth > 0) {
+      if (ch === "/" && next === "*") {
+        blockCommentDepth += 1;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      if (ch === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      i += 1;
+      continue;
+    }
+
+    if (dollarTag !== null) {
+      if (sql.startsWith(dollarTag, i)) {
+        out += " ".repeat(dollarTag.length);
+        i += dollarTag.length;
+        dollarTag = null;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      i += 1;
+      continue;
+    }
+
+    if (inSingleQuote) {
+      if (ch === "'" && next === "'") {
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      if (ch === "'") inSingleQuote = false;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "-" && next === "-") {
+      inLineComment = true;
+      out += "  ";
+      i += 2;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      blockCommentDepth = 1;
+      out += "  ";
+      i += 2;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingleQuote = true;
+      out += " ";
+      i += 1;
+      continue;
+    }
+
+    if (ch === "$") {
+      const taggedMatch = sql.slice(i).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$/);
+      const untaggedMatch = sql.slice(i).match(/^\$\$/);
+      const match = taggedMatch ?? untaggedMatch;
+
+      if (match) {
+        dollarTag = match[0];
+        out += " ".repeat(dollarTag.length);
+        i += dollarTag.length;
+        continue;
+      }
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return out;
+}
+
+function extractSchemaFromQualifiedReference(reference: string): string | null {
+  const match = QUALIFIED_IDENTIFIER_REGEX.exec(reference);
+  if (!match) return null;
+
+  return canonicalizeSchemaName(match[1]);
+}
+
+function extractExplicitSchemasFromQuery(sql: string): string[] {
+  const sanitized = sanitizeSqlForSchemaGuard(sql);
+  const foundSchemas = new Set<string>();
+
+  RELATION_QUALIFIED_REF_REGEX.lastIndex = 0;
+  let relationMatch: RegExpExecArray | null;
+  while ((relationMatch = RELATION_QUALIFIED_REF_REGEX.exec(sanitized)) !== null) {
+    const schema = extractSchemaFromQualifiedReference(relationMatch[1]);
+    if (schema) foundSchemas.add(schema);
+  }
+
+  FUNCTION_QUALIFIED_REF_REGEX.lastIndex = 0;
+  let functionMatch: RegExpExecArray | null;
+  while ((functionMatch = FUNCTION_QUALIFIED_REF_REGEX.exec(sanitized)) !== null) {
+    const schema = extractSchemaFromQualifiedReference(functionMatch[1]);
+    if (schema) foundSchemas.add(schema);
+  }
+
+  return Array.from(foundSchemas);
+}
+
+function assertQuerySchemaScope(envName: string, sql: string, allowedSchemas: string[]): void {
+  if (allowedSchemas.length === 0) return;
+
+  const allowedSet = new Set([...allowedSchemas, "pg_catalog", "information_schema"]);
+  const explicitSchemas = extractExplicitSchemasFromQuery(sql);
+  const forbidden = explicitSchemas.filter((schema) => !allowedSet.has(schema));
+
+  if (forbidden.length > 0) {
+    throw new Error(
+      `Schema access denied on "${envName}". Allowed schemas: ${allowedSchemas.join(", ")}. Blocked explicit schemas: ${forbidden.join(", ")}.`
+    );
+  }
+}
+
 const WRITE_KEYWORDS = [
   "UPDATE", "DELETE", "INSERT", "DROP", "TRUNCATE",
   "ALTER", "CREATE", "REPLACE", "GRANT", "REVOKE",
+  "MERGE", "CALL", "DO", "COPY", "COMMENT", "ANALYZE",
+  "VACUUM", "REINDEX", "CLUSTER", "REFRESH", "EXECUTE", "PREPARE",
 ];
 
-/** Strip SQL single-line (--) and multi-line (/* *\/) comments. */
-function stripSqlComments(sql: string): string {
-  return sql
-    .replace(/--[^\n]*/g, " ")
-    .replace(/\/\*[\s\S]*?\*\//g, " ");
+const READ_ONLY_STATEMENT_START = new Set([
+  "SELECT",
+  "WITH",
+  "VALUES",
+  "SHOW",
+  "TABLE",
+  "EXPLAIN",
+]);
+
+/**
+ * Remove comments and quoted literals before inspection.
+ * This prevents bypasses through strings/comments and avoids splitting on semicolons inside them.
+ */
+function sanitizeSqlForInspection(sql: string): string {
+  let out = "";
+  let i = 0;
+
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let dollarTag: string | null = null;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1] ?? "";
+
+    if (inLineComment) {
+      out += ch === "\n" ? "\n" : " ";
+      if (ch === "\n") inLineComment = false;
+      i += 1;
+      continue;
+    }
+
+    if (blockCommentDepth > 0) {
+      if (ch === "/" && next === "*") {
+        blockCommentDepth += 1;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      if (ch === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      i += 1;
+      continue;
+    }
+
+    if (dollarTag !== null) {
+      if (sql.startsWith(dollarTag, i)) {
+        out += " ".repeat(dollarTag.length);
+        i += dollarTag.length;
+        dollarTag = null;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      i += 1;
+      continue;
+    }
+
+    if (inSingleQuote) {
+      if (ch === "'" && next === "'") {
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      if (ch === "'") inSingleQuote = false;
+      i += 1;
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      if (ch === '"' && next === '"') {
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      if (ch === '"') inDoubleQuote = false;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "-" && next === "-") {
+      inLineComment = true;
+      out += "  ";
+      i += 2;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      blockCommentDepth = 1;
+      out += "  ";
+      i += 2;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingleQuote = true;
+      out += " ";
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDoubleQuote = true;
+      out += " ";
+      i += 1;
+      continue;
+    }
+
+    if (ch === "$") {
+      const taggedMatch = sql.slice(i).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$/);
+      const untaggedMatch = sql.slice(i).match(/^\$\$/);
+      const match = taggedMatch ?? untaggedMatch;
+
+      if (match) {
+        dollarTag = match[0];
+        out += " ".repeat(dollarTag.length);
+        i += dollarTag.length;
+        continue;
+      }
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return out.toUpperCase();
+}
+
+function splitSqlStatements(sql: string): string[] {
+  return sql.split(";").map((stmt) => stmt.trim()).filter(Boolean);
+}
+
+function containsWriteKeyword(stmt: string): boolean {
+  return WRITE_KEYWORDS.some((kw) => new RegExp(`\\b${kw}\\b`).test(stmt));
+}
+
+function isSelectIntoStatement(stmt: string): boolean {
+  return /\bSELECT\b[\s\S]*\bINTO\b/.test(stmt);
+}
+
+function isDangerousStatement(stmt: string): boolean {
+  const firstToken = stmt.match(/^[A-Z]+/)?.[0];
+  if (!firstToken) return false;
+
+  if (containsWriteKeyword(stmt)) return true;
+  if (isSelectIntoStatement(stmt)) return true;
+
+  // Fail closed: any statement outside the explicit read-only subset needs confirmation.
+  return !READ_ONLY_STATEMENT_START.has(firstToken);
 }
 
 /**
@@ -238,26 +635,13 @@ function stripSqlComments(sql: string): string {
  *   - Multi-statement: SELECT 1; DELETE FROM users
  *   - CTEs with embedded writes: WITH x AS (UPDATE ...) SELECT * FROM x
  *   - Comment-based bypass: -- DELETE\nSELECT ...
+ *   - Payload hidden in literals/comments: PREPARE p AS 'DELETE ...'; EXECUTE p
+ *   - Unknown statement types are treated as dangerous (fail closed)
  */
 function isDangerousQuery(sql: string): boolean {
-  const normalized = stripSqlComments(sql).toUpperCase();
-
-  // Split on semicolons to catch multi-statement attacks
-  const statements = normalized.split(";").map((s) => s.trim()).filter(Boolean);
-
-  return statements.some((stmt) => {
-    // Direct write at statement start: "DELETE ...", "UPDATE ...", etc.
-    if (WRITE_KEYWORDS.some((kw) => new RegExp(`^${kw}(\\s|$)`).test(stmt))) {
-      return true;
-    }
-
-    // CTE containing a write: "WITH x AS (UPDATE ...) SELECT ..."
-    if (/^WITH[\s(]/.test(stmt)) {
-      return WRITE_KEYWORDS.some((kw) => new RegExp(`\\b${kw}\\b`).test(stmt));
-    }
-
-    return false;
-  });
+  const normalized = sanitizeSqlForInspection(sql);
+  const statements = splitSqlStatements(normalized);
+  return statements.some((stmt) => isDangerousStatement(stmt));
 }
 
 /** Runtime validation for query parameters. */
@@ -268,6 +652,46 @@ function isValidParam(v: unknown): v is string | number | boolean | null {
     typeof v === "number" ||
     typeof v === "boolean"
   );
+}
+
+/**
+ * Defense-in-depth:
+ * - without explicit WRITE authorization, every query runs in a READ ONLY transaction
+ * - with explicit WRITE authorization, query runs normally
+ */
+async function executeQueryWithSafety(
+  pool: pg.Pool,
+  sql: string,
+  params: unknown[] | undefined,
+  writeAuthorized: boolean,
+  allowedSchemas: string[]
+): Promise<pg.QueryResult> {
+  const enforceSearchPath = allowedSchemas.length > 0;
+
+  if (writeAuthorized && !enforceSearchPath) {
+    return pool.query(sql, params as unknown[]);
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query(writeAuthorized ? "BEGIN" : "BEGIN READ ONLY");
+    if (enforceSearchPath) {
+      await client.query(`SET LOCAL search_path TO ${buildSearchPath(allowedSchemas)}`);
+    }
+    const result = await client.query(sql, params as unknown[]);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore rollback failures; original error is more relevant
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // ─── MCP tools ──────────────────────────────────────────────────────────────
@@ -293,6 +717,8 @@ function buildTools(): Tool[] {
 
 - Always use schema-qualified table names (e.g., schema.table_name)
 - Prefer SELECT queries; use write operations with care
+- Without confirm_write="WRITE", queries run in PostgreSQL READ ONLY mode
+- If POSTGRES_{ENV}_SCHEMA is set, access is restricted to those schema(s)
 - Use parameterized queries ($1, $2 …) for user-provided values${protectionNote}`,
       inputSchema: {
         type: "object",
@@ -332,8 +758,7 @@ function buildTools(): Tool[] {
           },
           schema: {
             type: "string",
-            description: "Schema name (default: public)",
-            default: "public",
+            description: "Schema name (default: environment scope if configured, otherwise public)",
           },
         },
         required: ["env"],
@@ -357,8 +782,7 @@ function buildTools(): Tool[] {
           },
           schema: {
             type: "string",
-            description: "Schema name (default: public)",
-            default: "public",
+            description: "Schema name (default: environment scope if configured, otherwise public)",
           },
         },
         required: ["env", "table"],
@@ -409,14 +833,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "list-environments": {
         log("list-environments", null, { count: ENV_NAMES.length, envs: ENV_NAMES.join(",") });
 
-        const envs = ENV_NAMES.map((envName) => ({
-          name: envName,
-          host: ENV_CONFIGS[envName].host,
-          database: ENV_CONFIGS[envName].database,
-          schema: ENV_CONFIGS[envName].schema ?? "public",
-          ssl: ENV_CONFIGS[envName].ssl ?? false,
-          allowWrites: ENV_CONFIGS[envName].allowWrites === true ? "confirm" : "disabled",
-        }));
+        const envs = ENV_NAMES.map((envName) => {
+          const envConfig = ENV_CONFIGS[envName];
+          const allowedSchemas = getAllowedSchemas(envConfig);
+
+          return {
+            name: envName,
+            host: envConfig.host,
+            database: envConfig.database,
+            schema: allowedSchemas.length > 0 ? allowedSchemas.join(",") : "*",
+            schemaScope: allowedSchemas.length > 0 ? allowedSchemas : ["*"],
+            ssl: envConfig.ssl ?? false,
+            allowWrites: envConfig.allowWrites === true ? "confirm" : "disabled",
+          };
+        });
 
         return {
           content: [{ type: "text", text: JSON.stringify(envs, null, 2) }],
@@ -436,12 +866,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           confirm_write?: string;
         };
 
-        const envConfig = ENV_CONFIGS[env];
-        if (!envConfig) {
-          throw new Error(
-            `Unknown environment: "${env}". Available: ${ENV_NAMES.join(", ")}`
-          );
-        }
+        const envConfig = getEnvConfigOrThrow(env);
+        const allowedSchemas = getAllowedSchemas(envConfig);
 
         if (params !== undefined) {
           const invalidIndex = params.findIndex((p) => !isValidParam(p));
@@ -451,6 +877,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             );
           }
         }
+
+        assertQuerySchemaScope(env, sql, allowedSchemas);
 
         const dangerous = isDangerousQuery(sql);
 
@@ -500,14 +928,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const pool = getPool(env);
-        const queryType = stripSqlComments(sql).trim().split(/\s+/)[0].toUpperCase();
+        const writeAuthorized = envConfig.allowWrites === true && confirm_write === "WRITE";
+        const queryType = sanitizeSqlForInspection(sql).trim().split(/\s+/)[0] || "UNKNOWN";
         const t0 = Date.now();
-        const result = await pool.query(sql, params as unknown[]);
+        const result = await executeQueryWithSafety(
+          pool,
+          sql,
+          params,
+          writeAuthorized,
+          allowedSchemas
+        );
         const duration = Date.now() - t0;
 
         log("query", env, {
           type: queryType,
-          db: ENV_CONFIGS[env].database,
+          db: envConfig.database,
           rows: result.rowCount ?? 0,
           duration: `${duration}ms`,
           ...(dangerous ? { write: true } : {}),
@@ -520,7 +955,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify(
                 {
                   environment: env,
-                  database: ENV_CONFIGS[env].database,
+                  database: envConfig.database,
                   queryType,
                   duration: `${duration}ms`,
                   rowCount: result.rowCount,
@@ -539,12 +974,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "list-tables": {
-        const { env, schema = "public" } = args as {
+        const { env, schema: requestedSchema } = args as {
           env: string;
           schema?: string;
         };
 
-        log("list-tables", env, { schema, db: ENV_CONFIGS[env].database });
+        const envConfig = getEnvConfigOrThrow(env);
+        const schema = resolveSchemaForTool(env, envConfig, requestedSchema);
+        log("list-tables", env, { schema, db: envConfig.database });
 
         const pool = getPool(env);
         const result = await pool.query(
@@ -565,7 +1002,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: JSON.stringify(
-                { environment: env, database: ENV_CONFIGS[env].database, schema, tables: result.rows },
+                { environment: env, database: envConfig.database, schema, tables: result.rows },
                 null,
                 2
               ),
@@ -575,13 +1012,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "describe-table": {
-        const { env, schema = "public", table } = args as {
+        const { env, schema: requestedSchema, table } = args as {
           env: string;
           schema?: string;
           table: string;
         };
 
-        log("describe-table", env, { schema, table, db: ENV_CONFIGS[env].database });
+        const envConfig = getEnvConfigOrThrow(env);
+        const schema = resolveSchemaForTool(env, envConfig, requestedSchema);
+        log("describe-table", env, { schema, table, db: envConfig.database });
 
         const pool = getPool(env);
         const result = await pool.query(
@@ -604,7 +1043,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: JSON.stringify(
-                { environment: env, database: ENV_CONFIGS[env].database, schema, table, columns: result.rows },
+                { environment: env, database: envConfig.database, schema, table, columns: result.rows },
                 null,
                 2
               ),
@@ -616,8 +1055,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "list-schemas": {
         const { env } = args as { env: string };
 
-        log("list-schemas", env, { db: ENV_CONFIGS[env].database });
+        const envConfig = getEnvConfigOrThrow(env);
+        log("list-schemas", env, { db: envConfig.database });
 
+        const allowedSchemas = getAllowedSchemas(envConfig);
         const pool = getPool(env);
         const result = await pool.query(
           `SELECT
@@ -625,10 +1066,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             (SELECT COUNT(*)
              FROM information_schema.tables
              WHERE table_schema = s.schema_name
-            ) AS table_count
-          FROM information_schema.schemata s
-          WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-          ORDER BY schema_name`
+             ) AS table_count
+           FROM information_schema.schemata s
+           WHERE
+             schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+             AND ($1::text[] IS NULL OR schema_name = ANY($1::text[]))
+           ORDER BY schema_name`,
+          [allowedSchemas.length > 0 ? allowedSchemas : null]
         );
 
         return {
@@ -636,7 +1080,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text",
               text: JSON.stringify(
-                { environment: env, database: ENV_CONFIGS[env].database, schemas: result.rows },
+                { environment: env, database: envConfig.database, schemas: result.rows },
                 null,
                 2
               ),
